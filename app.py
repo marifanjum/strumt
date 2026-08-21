@@ -20,6 +20,43 @@ from ai_news_generator import generate_ai_news
 # 1. Page Configuration & Layout
 st.set_page_config(page_title="Ummat News Studio & Direct Publisher", layout="wide")
 
+# --- PASSWORD PROTECTION GATE ---
+def check_password():
+    """Returns `True` if the user entered the correct password."""
+    
+    def password_entered():
+        if st.session_state["password"] == st.secrets.get("auth", {}).get("password", "999999"):
+            st.session_state["password_correct"] = True
+            del st.session_state["password"]  # Don't store password
+        else:
+            st.session_state["password_correct"] = False
+
+    if "password_correct" not in st.session_state:
+        # First run, show input for password
+        st.text_input(
+            "🔒 Enter Master Password to Access Studio", 
+            type="password", 
+            on_change=password_entered, 
+            key="password"
+        )
+        return False
+    elif not st.session_state["password_correct"]:
+        # Password incorrect, show input + error
+        st.text_input(
+            "🔒 Enter Master Password to Access Studio", 
+            type="password", 
+            on_change=password_entered, 
+            key="password"
+        )
+        st.error("😕 Password incorrect")
+        return False
+    else:
+        # Password correct
+        return True
+
+if not check_password():
+    st.stop()  # Do not render the rest of the app until authenticated
+
 st.title("⚡ Direct Story Publisher & Studio Pro")
 
 # Initialize Playwright browser binaries for cloud environment
@@ -67,6 +104,7 @@ def get_card_filename(default_name: str, custom_prefix: str) -> str:
 tab_choice = st.sidebar.selectbox("Select Studio Module", [
     "📝 Direct Story Publisher",
     "🤖 AI News Studio",
+    "🌐 Social Media Manager",
     "🔗 Card from URL",
     "⚙️ Branding & Settings"
 ])
