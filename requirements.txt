@@ -1,0 +1,13 @@
+streamlit
+requests
+deep-translator
+playwright
+beautifulsoup4
+markdown
+cryptography
+groq
+google-genai
+openai
+Pillow
+arabic-reshaper
+python-bidi
