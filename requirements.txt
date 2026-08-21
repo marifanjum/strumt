@@ -1,7 +1,7 @@
 streamlit
 requests
 deep-translator
-playwright
+playwright==1.49.0
 beautifulsoup4
 markdown
 cryptography
@@ -11,4 +11,3 @@ openai
 Pillow
 arabic-reshaper
 python-bidi
-playwright==1.49.0
