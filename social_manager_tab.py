@@ -222,14 +222,18 @@ def render_social_manager_tab(app_config):
         with open(st.session_state["social_output_card"], "rb") as cf:
             st.download_button("📥 Download Generated Card", cf, file_name=os.path.basename(st.session_state["social_output_card"]), mime="image/png")
 
-
-# 6. SEO Output Box Display (Updated to reflect real-time session state output)
+    # 6. SEO Output Box Display (Forced via Session State Key binding)
     st.markdown("📊 **AI SEO & Social Media Output:**")
     
-    # This ensures the text box automatically displays the result when generated
+    # Initialize session state for the text area if it doesn't exist
+    if "seo_display_box" not in st.session_state:
+        st.session_state["seo_display_box"] = st.session_state.get("social_output_seo", "")
+    else:
+        # Update the widget's active state value whenever new AI text is generated
+        st.session_state["seo_display_box"] = st.session_state.get("social_output_seo", "")
+
     st.text_area(
         "SEO Metadata Result", 
-        value=st.session_state.get("social_output_seo", ""), 
         height=130, 
         key="seo_display_box"
     )
