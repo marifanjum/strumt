@@ -222,6 +222,14 @@ def render_social_manager_tab(app_config):
         with open(st.session_state["social_output_card"], "rb") as cf:
             st.download_button("📥 Download Generated Card", cf, file_name=os.path.basename(st.session_state["social_output_card"]), mime="image/png")
 
-    # 6. SEO Output Box Display
+
+# 6. SEO Output Box Display (Updated to reflect real-time session state output)
     st.markdown("📊 **AI SEO & Social Media Output:**")
-    st.text_area("SEO Metadata Result", value=st.session_state["social_output_seo"], height=130, key="seo_display_box")
+    
+    # This ensures the text box automatically displays the result when generated
+    st.text_area(
+        "SEO Metadata Result", 
+        value=st.session_state.get("social_output_seo", ""), 
+        height=130, 
+        key="seo_display_box"
+    )
