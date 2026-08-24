@@ -176,41 +176,47 @@ if tab_choice == "📝 Direct Story Publisher":
         
         category_ids = [category_map[selected_cat]] if selected_cat in category_map else []
         
+        # Initialize variables before try block to prevent UnboundLocalError
+        posted_link = None
+        card_img_source = resolved_img_path
+        media_id = None
+        
         with st.spinner("Processing story and communicating with WordPress..."):
             try:
-                card_img_source = resolved_img_path
+                # 1. Download image locally if an external HTTP URL was provided
                 if resolved_img_path and resolved_img_path.startswith("http"):
                     headers = {'User-Agent': 'Mozilla/5.0'}
                     img_resp = requests.get(resolved_img_path, headers=headers, timeout=15, verify=False)
-                    if img_resp.status_code == 200:
+                    if img_resp.status_code == 200 and len(img_resp.content) > 1000:
                         temp_p = os.path.join(tempfile.gettempdir(), f"wp_card_{os.urandom(4).hex()}.jpg")
                         with open(temp_p, 'wb') as f:
                             f.write(img_resp.content)
                         card_img_source = temp_p
 
-                    media_id = None
-                    if resolved_img_path:
-                        media_id = upload_media_to_wordpress(
-                            image_source=resolved_img_path,
-                            wp_url=WP_URL,
-                            wp_user=WP_USER,
-                            wp_pass=WP_PASS,
-                            title_text=title,
-                            caption_text=image_caption
-                        )
-                    
-                    posted_link = post_to_wordpress(
-                        title=title,
-                        content=html_content,
+                # 2. Upload image to WordPress with full native metadata
+                if resolved_img_path:
+                    media_id = get_media_id_from_url(
+                        image_source=resolved_img_path,
                         wp_url=WP_URL,
                         wp_user=WP_USER,
                         wp_pass=WP_PASS,
-                        excerpt=excerpt,
-                        media_id=media_id,
-                        status=pub_status,
-                        category_ids=category_ids
+                        caption_text=image_caption
                     )
 
+                # 3. Publish the WordPress post and link featured_media
+                posted_link = post_to_wordpress(
+                    title=title, 
+                    content=html_content, 
+                    wp_url=WP_URL,
+                    wp_user=WP_USER, 
+                    wp_pass=WP_PASS,
+                    excerpt=excerpt, 
+                    media_id=media_id, 
+                    status=pub_status, 
+                    category_ids=category_ids
+                )
+
+                # 4. Handle Post + Card + SEO actions if post was successful
                 if posted_link:
                     st.success(f"Story successfully published! [View Live Post]({posted_link})")
                     
@@ -221,8 +227,10 @@ if tab_choice == "📝 Direct Story Publisher":
                         card_file = os.path.join(OUTPUT_DIR, final_filename)
                         
                         generate_custom_card(
-                            headline_text=title, news_img_path=card_img_source,
-                            template_path=TEMPLATE_PATH, output_path=card_file
+                            headline_text=title, 
+                            news_img_path=card_img_source,
+                            template_path=TEMPLATE_PATH, 
+                            output_path=card_file
                         )
                         if os.path.exists(card_file) and os.path.getsize(card_file) > 0:
                             st.image(card_file, caption="Generated Social Media Card")
@@ -239,7 +247,7 @@ if tab_choice == "📝 Direct Story Publisher":
                         seo_output = generate_ai_news(ai_prompt, provider=AI_PROVIDER, api_key=ai_active_key, model_name=ai_active_model)
                         st.info(f"📋 SEO & Hashtags:\n\n{seo_output}")
                 else:
-                    st.error("Could not publish to WordPress.")
+                    st.error("Could not publish to WordPress. Check server logs or credentials.")
             except Exception as e:
                 st.error(f"Publishing failed: {e}")
                 st.code(traceback.format_exc())
