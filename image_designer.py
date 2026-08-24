@@ -2,16 +2,15 @@ import sys
 import os
 import glob
 import base64
-import asyncio
 import requests
 import urllib.parse
 from datetime import datetime
-from playwright.async_api import async_playwright
+from playwright.sync_api import sync_playwright
 
 def resource_path(relative_path):
     if not relative_path:
         return ""
-    
+
     if hasattr(sys, '_MEIPASS'):
         path_in_temp = os.path.join(sys._MEIPASS, relative_path)
         if os.path.exists(path_in_temp):
@@ -32,7 +31,7 @@ def resource_path(relative_path):
 
 
 def get_chromium_executable_path():
-    # 1. Check if a local bundled browser folder exists (if you ever decide to pack one)
+    # 1. Check bundled paths (Desktop/PyInstaller builds)
     if getattr(sys, 'frozen', False):
         exe_dir = os.path.dirname(sys.executable)
         base_dirs = [
@@ -47,7 +46,6 @@ def get_chromium_executable_path():
         if not b_dir:
             continue
         browsers_dir = os.path.join(b_dir, "playwright-browsers")
-        
         direct_chrome = os.path.join(browsers_dir, "chrome-win64", "chrome.exe")
         if os.path.exists(direct_chrome):
             return direct_chrome
@@ -62,31 +60,37 @@ def get_chromium_executable_path():
             if found and os.path.exists(found[0]):
                 return found[0]
 
-    # 2. Fallback: Scan standard Windows system paths for Google Chrome or Microsoft Edge
+    # 2. Check Linux & Windows system paths for Cloud / Local execution
     system_chrome_paths = [
+        # Linux / Container paths
+        "/usr/bin/chromium",
+        "/usr/bin/chromium-browser",
+        "/usr/bin/google-chrome",
+        "/snap/bin/chromium",
+        "/usr/lib/chromium-browser/chromium-browser",
+        # Windows paths
         r"C:\Program Files\Google\Chrome\Application\chrome.exe",
         r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
         r"C:\Users\{}\AppData\Local\Google\Chrome\Application\chrome.exe".format(os.environ.get('USERNAME', '')),
         r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
         r"C:\Program Files (x86)\Microsoft\Microsoft Edge\Application\msedge.exe"
     ]
-    
+
     for path in system_chrome_paths:
         if os.path.exists(path):
-            print(f"✅ Found system browser -> {path}")
             return path
 
     return None
 
 
-async def launch_browser_safely(p):
+def launch_browser_safely(p):
     chrome_exe = get_chromium_executable_path()
+    container_args = ["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]
+    
     if chrome_exe:
-        print(f"🚀 Launching Chromium Exe -> {chrome_exe}")
-        return await p.chromium.launch(executable_path=chrome_exe, headless=True)
+        return p.chromium.launch(executable_path=chrome_exe, headless=True, args=container_args)
     else:
-        print("⚠️ Bundled Chromium path not found, attempting default launch...")
-        return await p.chromium.launch(headless=True)
+        return p.chromium.launch(headless=True, args=container_args)
 
 
 try:
@@ -98,7 +102,7 @@ except ImportError:
 def img_to_base64(img_path):
     if not img_path or not isinstance(img_path, (str, bytes, os.PathLike)):
         return ""
-    
+
     real_path = resource_path(str(img_path))
     if not os.path.exists(real_path):
         real_path = str(img_path)
@@ -137,7 +141,7 @@ def fetch_ai_generated_image(news_text, output_path="temp_ai_bg.jpg", width=1280
         clean_prompt = str(news_text)[:100].replace("\n", " ").strip()
         if not clean_prompt:
             clean_prompt = "breaking news studio broadcast background"
-            
+
         if GoogleTranslator:
             try:
                 clean_prompt = GoogleTranslator(source='auto', target='en').translate(clean_prompt)
@@ -147,7 +151,7 @@ def fetch_ai_generated_image(news_text, output_path="temp_ai_bg.jpg", width=1280
         english_prompt = f"professional news broadcast cinematic studio background, high quality 8k, photorealistic, {clean_prompt}"
         encoded_prompt = urllib.parse.quote(english_prompt)
         img_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width={width}&height={height}&nologo=true"
-        
+
         response = requests.get(img_url, timeout=30, verify=False)
         if response.status_code == 200 and len(response.content) > 5000:
             with open(output_path, 'wb') as f:
@@ -168,15 +172,6 @@ def calculate_dynamic_font_size(text):
         return 100, 1.2
     else:
         return 93, 1.2
-
-
-def _run_async_safe(async_func):
-    try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        return loop.run_until_complete(async_func())
-    except Exception as e:
-        print("Async Execution Error:", e)
 
 
 # ---------------------------------------------------------
@@ -235,7 +230,6 @@ def create_ummat_social_card(
     font_b64 = font_to_base64(font_path)
     font_size, line_height = calculate_dynamic_font_size(clean_headline)
 
-    # 💡 Fixed CSS @font-face injection block
     font_face_css = f"@font-face {{ font-family: 'Jameel Custom'; src: url('{font_b64}') format('truetype'); font-weight: normal; font-style: normal; }}" if font_b64 else ""
 
     html_content = f"""
@@ -319,23 +313,17 @@ def create_ummat_social_card(
     </html>
     """
 
-    async def _generate():
-        try:
-            async with async_playwright() as p:
-                browser = await launch_browser_safely(p)
-                page = await browser.new_page(viewport={"width": 1080, "height": 1350})
-                await page.set_content(html_content, wait_until="networkidle")
-                await page.wait_for_timeout(400)
-                
-                abs_out = os.path.abspath(output_path)
-                os.makedirs(os.path.dirname(abs_out) if os.path.dirname(abs_out) else '.', exist_ok=True)
-                await page.screenshot(path=abs_out, full_page=True)
-                await browser.close()
-                print(f"✅ Social Card Generated -> {abs_out}")
-        except Exception as e:
-            print(f"❌ Social Card Error: {e}")
+    abs_out = os.path.abspath(output_path)
+    os.makedirs(os.path.dirname(abs_out) if os.path.dirname(abs_out) else '.', exist_ok=True)
 
-    _run_async_safe(_generate)
+    with sync_playwright() as p:
+        browser = launch_browser_safely(p)
+        page = browser.new_page(viewport={"width": 1080, "height": 1350})
+        page.set_content(html_content, wait_until="networkidle")
+        page.wait_for_timeout(400)
+        page.screenshot(path=abs_out, full_page=True)
+        browser.close()
+
     return output_path
 
 generate_custom_card = create_ummat_social_card
@@ -361,7 +349,7 @@ def make_youtube_169_thumbnail(headline_text=None, script_text=None, news_img_pa
     clean_lines = [line.strip() for line in str(raw_input).split('\n') if line.strip()]
     top_title = clean_lines[0] if len(clean_lines) > 0 else "اہم خبر"
     top_title = top_title.replace("ٹائٹل:", "").replace("TITLE:", "").replace("Headline:", "").strip()
-    
+
     bottom_text = clean_lines[1] if len(clean_lines) > 1 else "تازہ ترین اپڈیٹ"
 
     if not news_img_path or not os.path.exists(str(news_img_path)):
@@ -441,23 +429,17 @@ def make_youtube_169_thumbnail(headline_text=None, script_text=None, news_img_pa
     </html>
     """
 
-    async def _generate():
-        try:
-            async with async_playwright() as p:
-                browser = await launch_browser_safely(p)
-                page = await browser.new_page(viewport={"width": 1280, "height": 720})
-                await page.set_content(html_content, wait_until="networkidle")
-                await page.wait_for_timeout(400)
-                
-                abs_out = os.path.abspath(output_path)
-                os.makedirs(os.path.dirname(abs_out) if os.path.dirname(abs_out) else '.', exist_ok=True)
-                await page.screenshot(path=abs_out)
-                await browser.close()
-                print(f"✅ YT Thumbnail Generated -> {abs_out}")
-        except Exception as e:
-            print(f"❌ YT Thumbnail Error: {e}")
+    abs_out = os.path.abspath(output_path)
+    os.makedirs(os.path.dirname(abs_out) if os.path.dirname(abs_out) else '.', exist_ok=True)
 
-    _run_async_safe(_generate)
+    with sync_playwright() as p:
+        browser = launch_browser_safely(p)
+        page = browser.new_page(viewport={"width": 1280, "height": 720})
+        page.set_content(html_content, wait_until="networkidle")
+        page.wait_for_timeout(400)
+        page.screenshot(path=abs_out)
+        browser.close()
+
     return output_path
 
 
@@ -475,7 +457,7 @@ def make_shorts_916_cover(urdu_text, english_title="www.ummat.net", news_img_pat
                 break
 
     clean_text = str(urdu_text).replace("ٹائٹل:", "").replace("TITLE:", "").replace("Headline:", "").strip()
-    
+
     if not news_img_path or not os.path.exists(str(news_img_path)):
         news_img_path = fetch_ai_generated_image(urdu_text, output_path="temp_ai_shorts_bg.jpg", width=1080, height=1920)
 
@@ -529,22 +511,15 @@ def make_shorts_916_cover(urdu_text, english_title="www.ummat.net", news_img_pat
     </html>
     """
 
-    async def _generate():
-        try:
-            async with async_playwright() as p:
-                browser = await launch_browser_safely(p)
-                page = await browser.new_page(viewport={"width": 1080, "height": 1350})
-                await page.set_content(html_content, wait_until="networkidle")
-                await page.wait_for_timeout(400)
-                
-                abs_out = os.path.abspath(output_path)
-                os.makedirs(os.path.dirname(abs_out) if os.path.dirname(abs_out) else '.', exist_ok=True)
-                
-                await page.screenshot(path=abs_out, full_page=True)
-                await browser.close()
-                print(f"✅ Shorts Cover Generated -> {abs_out}")
-        except Exception as e:
-            print(f"❌ Shorts Cover Error: {e}")
+    abs_out = os.path.abspath(output_path)
+    os.makedirs(os.path.dirname(abs_out) if os.path.dirname(abs_out) else '.', exist_ok=True)
 
-    _run_async_safe(_generate)
+    with sync_playwright() as p:
+        browser = launch_browser_safely(p)
+        page = browser.new_page(viewport={"width": 1080, "height": 1920})
+        page.set_content(html_content, wait_until="networkidle")
+        page.wait_for_timeout(400)
+        page.screenshot(path=abs_out, full_page=True)
+        browser.close()
+
     return output_path
