@@ -55,13 +55,12 @@ if not check_password():
 
 st.title("⚡ Direct Story Publisher & Studio Pro")
 
-# Initialize Playwright browser binaries and Linux shared libraries for cloud environment
+# Initialize Playwright browser binaries for cloud environment (no sudo calls)
 @st.cache_resource
 def init_playwright():
     import subprocess
     try:
         subprocess.run(["playwright", "install", "chromium"], check=True)
-        subprocess.run(["playwright", "install-deps", "chromium"], check=False)
     except Exception as e:
         print("Playwright install notice:", e)
 
