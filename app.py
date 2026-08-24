@@ -287,25 +287,27 @@ elif tab_choice == "🔗 Card from URL":
         if not url_input.strip():
             st.warning("Please enter story URL!")
         else:
-            with st.spinner("Fetching live page with browser & generating card..."):
+            with st.spinner("Fetching story and grabbing original image directly via browser session..."):
                 try:
                     headline = ""
                     img_path = None
 
-                    # Use Playwright to bypass Cloudflare / JS rendering
                     with sync_playwright() as p:
                         from image_designer import launch_browser_safely
                         browser = launch_browser_safely(p)
-                        page = browser.new_page(
-                            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                        context = browser.new_context(
+                            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                            viewport={"width": 1280, "height": 800}
                         )
-                        page.goto(url_input, wait_until="domcontentloaded", timeout=30000)
-                        page.wait_for_timeout(1000)
+                        page = context.new_page()
+                        page.goto(url_input, wait_until="domcontentloaded", timeout=35000)
+                        page.wait_for_timeout(1500)
 
-                        # 1. Extract Headline from live DOM
+                        # 1. Extract Headline
                         title_el = page.query_selector("h1, .entry-title, .post-title, meta[property='og:title']")
                         if title_el:
-                            if title_el.evaluate("el => el.tagName").lower() == "meta":
+                            tag_name = title_el.evaluate("el => el.tagName").lower()
+                            if tag_name == "meta":
                                 headline = title_el.get_attribute("content") or ""
                             else:
                                 headline = title_el.inner_text().strip()
@@ -313,44 +315,38 @@ elif tab_choice == "🔗 Card from URL":
                         if not headline:
                             headline = page.title()
 
-                        # Clean trailing sitenames
                         headline = re.sub(r'\s*[-–|—]\s*(روزنامہ\s*امت|Ummat|Daily Ummat).*$', '', headline, flags=re.I).strip()
 
-                        # 2. Extract Featured Image URL from live DOM
-                        img_url = page.evaluate("""() => {
-                            // 1. Check meta tags
-                            const og = document.querySelector('meta[property="og:image"], meta[name="twitter:image"]');
-                            if (og && og.content && !og.content.includes('logo') && !og.content.includes('icon')) {
-                                return og.content;
-                            }
-                            // 2. Check featured image / article hero
-                            const wpImg = document.querySelector('.wp-post-image, .featured-image img, article img, .post-thumbnail img, .entry-content img');
-                            if (wpImg) {
-                                return wpImg.currentSrc || wpImg.src || wpImg.getAttribute('data-src') || wpImg.getAttribute('data-lazy-src');
-                            }
-                            return null;
-                        }""")
+                        # 2. Extract Featured Image Element
+                        img_elem = page.query_selector(
+                            ".wp-post-image, .featured-image img, article img, .post-thumbnail img, .entry-content img, meta[property='og:image']"
+                        )
+
+                        # Capture raw image buffer directly from the browser context
+                        if img_elem:
+                            tag = img_elem.evaluate("el => el.tagName").lower()
+                            if tag == "meta":
+                                og_url = img_elem.get_attribute("content")
+                                if og_url:
+                                    img_res = page.request.get(og_url)
+                                    if img_res.status == 200:
+                                        img_bytes = img_res.body()
+                                        img_path = os.path.join(tempfile.gettempdir(), f"fetched_{os.urandom(4).hex()}.jpg")
+                                        with open(img_path, "wb") as f:
+                                            f.write(img_bytes)
+                            else:
+                                # Direct element screenshot (guarantees exact image without re-requesting from server)
+                                img_path = os.path.join(tempfile.gettempdir(), f"fetched_{os.urandom(4).hex()}.png")
+                                img_elem.screenshot(path=img_path)
 
                         browser.close()
 
-                    # 3. Download the actual image with session cookies / referer
-                    if img_url:
-                        st.info(f"📸 Extracted image URL: {img_url}")
-                        headers = {
-                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                            'Referer': url_input
-                        }
-                        img_resp = requests.get(img_url, headers=headers, timeout=15, verify=False)
-                        if img_resp.status_code == 200 and len(img_resp.content) > 3000:
-                            img_path = os.path.join(tempfile.gettempdir(), f"fetched_url_{os.urandom(4).hex()}.jpg")
-                            with open(img_path, "wb") as f:
-                                f.write(img_resp.content)
-                        else:
-                            st.warning(f"Image download HTTP status: {img_resp.status_code}")
+                    if img_path and os.path.exists(img_path) and os.path.getsize(img_path) > 1000:
+                        st.info("✅ Original story image successfully captured.")
                     else:
-                        st.warning("Could not find featured image in page meta or DOM.")
+                        st.warning("⚠️ Could not extract the original image element, using fallback.")
 
-                    # 4. Generate the card
+                    # 3. Generate Card
                     os.makedirs(OUTPUT_DIR, exist_ok=True)
                     default_base = f"url_card_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
                     final_filename = get_card_filename(default_base, url_custom_name)
@@ -369,7 +365,7 @@ elif tab_choice == "🔗 Card from URL":
                         with open(card_file, "rb") as cf:
                             st.download_button("📥 Download Card", cf.read(), file_name=final_filename, mime="image/png")
                     else:
-                        st.error(f"Renderer failed to write card image at: {card_file}")
+                        st.error(f"Renderer failed to write card at: {card_file}")
                 except Exception as e:
                     st.error(f"Card generation failed: {e}")
                     st.code(traceback.format_exc())
