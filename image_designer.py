@@ -31,7 +31,7 @@ def resource_path(relative_path):
 
 
 def get_chromium_executable_path():
-    # 1. Check bundled paths (Desktop/PyInstaller builds)
+    # 1. Bundled Chromium search (desktop/pyinstaller)
     if getattr(sys, 'frozen', False):
         exe_dir = os.path.dirname(sys.executable)
         base_dirs = [
@@ -60,15 +60,13 @@ def get_chromium_executable_path():
             if found and os.path.exists(found[0]):
                 return found[0]
 
-    # 2. Check Linux & Windows system paths for Cloud / Local execution
+    # 2. System binary detection
     system_chrome_paths = [
-        # Linux / Container paths
         "/usr/bin/chromium",
         "/usr/bin/chromium-browser",
         "/usr/bin/google-chrome",
         "/snap/bin/chromium",
         "/usr/lib/chromium-browser/chromium-browser",
-        # Windows paths
         r"C:\Program Files\Google\Chrome\Application\chrome.exe",
         r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
         r"C:\Users\{}\AppData\Local\Google\Chrome\Application\chrome.exe".format(os.environ.get('USERNAME', '')),
@@ -86,7 +84,6 @@ def get_chromium_executable_path():
 def launch_browser_safely(p):
     chrome_exe = get_chromium_executable_path()
     container_args = ["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]
-    
     if chrome_exe:
         return p.chromium.launch(executable_path=chrome_exe, headless=True, args=container_args)
     else:
@@ -115,7 +112,7 @@ def img_to_base64(img_path):
                 mime = "image/png" if ext == "png" else "image/jpeg"
                 return f"data:{mime};base64,{encoded_string}"
         except Exception as e:
-            print(f"Base64 Error ({real_path}):", e)
+            print(f"Base64 Error ({real_path}): {e}")
     return ""
 
 
@@ -132,7 +129,7 @@ def font_to_base64(font_path):
                 encoded_string = base64.b64encode(font_file.read()).decode('utf-8')
                 return f"data:font/ttf;charset=utf-8;base64,{encoded_string}"
         except Exception as e:
-            print("Font Base64 Error:", e)
+            print(f"Font Base64 Error: {e}")
     return ""
 
 
@@ -158,7 +155,7 @@ def fetch_ai_generated_image(news_text, output_path="temp_ai_bg.jpg", width=1280
                 f.write(response.content)
             return output_path
     except Exception as e:
-        print("AI Image Auto-Gen Error:", e)
+        print(f"AI Image Auto-Gen Error: {e}")
     return None
 
 
@@ -177,7 +174,7 @@ def calculate_dynamic_font_size(text):
 # ---------------------------------------------------------
 # 1. SOCIAL CARD FUNCTION 
 # ---------------------------------------------------------
-def def create_ummat_social_card(
+def create_ummat_social_card(
     headline_text, 
     news_img_path=None, 
     template_path=None, 
@@ -188,7 +185,6 @@ def def create_ummat_social_card(
     if not clean_headline:
         clean_headline = "یہاں خبر کی اردو سرخی آئے گی۔"
 
-    # Verify input image exists and has content
     valid_news_img = None
     if news_img_path:
         clean_p = str(news_img_path).strip().strip("'").strip('"')
@@ -198,7 +194,7 @@ def def create_ummat_social_card(
             valid_news_img = resource_path(clean_p)
 
     if not valid_news_img:
-        print("⚠️ No valid local image found, triggering AI background generator...")
+        print("⚠️ No valid local image provided, generating AI background fallback...")
         news_img_path = fetch_ai_generated_image(clean_headline, output_path="temp_ai_bg.jpg", width=1080, height=1350)
     else:
         news_img_path = valid_news_img
@@ -233,6 +229,9 @@ def def create_ummat_social_card(
     font_size, line_height = calculate_dynamic_font_size(clean_headline)
 
     font_face_css = f"@font-face {{ font-family: 'Jameel Custom'; src: url('{font_b64}') format('truetype'); font-weight: normal; font-style: normal; }}" if font_b64 else ""
+
+    news_tag = f"<img class='news-photo' src='{news_img_b64}'>" if news_img_b64 else ""
+    frame_tag = f"<img class='frame-overlay' src='{template_b64}'>" if template_b64 else ""
 
     html_content = f"""
     <!DOCTYPE html>
@@ -306,8 +305,8 @@ def def create_ummat_social_card(
           </filter>
         </svg>
 
-        {"<img class='news-photo' src='" + news_img_b64 + "'>" if news_img_b64 else ""}
-        {"<img class='frame-overlay' src='" + template_b64 + "'>" if template_b64 else ""}
+        {news_tag}
+        {frame_tag}
         <div class="headline-container">
             <div class="headline-text">{clean_headline}</div>
         </div>
@@ -361,6 +360,7 @@ def make_youtube_169_thumbnail(headline_text=None, script_text=None, news_img_pa
     logo_b64 = img_to_base64(final_logo_path)
 
     bg_style = f"background-image: url('{news_img_b64}'); background-size: cover; background-position: center;" if news_img_b64 else "background: #0f172a;"
+    logo_tag = f"<img class='logo' src='{logo_b64}'>" if logo_b64 else ""
 
     html_content = f"""
     <!DOCTYPE html>
@@ -424,7 +424,7 @@ def make_youtube_169_thumbnail(headline_text=None, script_text=None, news_img_pa
             <div class="bottom-text">{bottom_text}</div>
             <div class="logo-box">
                 <div class="yellow-line"></div>
-                {"<img class='logo' src='" + logo_b64 + "'>" if logo_b64 else ""}
+                {logo_tag}
             </div>
         </div>
     </body>
@@ -467,6 +467,7 @@ def make_shorts_916_cover(urdu_text, english_title="www.ummat.net", news_img_pat
     logo_b64 = img_to_base64(final_logo_path)
 
     bg_style = f"background-image: url('{news_img_b64}'); background-size: cover; background-position: center;" if news_img_b64 else "background-color: #0f172a;"
+    logo_tag = f"<img class='logo' src='{logo_b64}'>" if logo_b64 else ""
 
     html_content = f"""
     <!DOCTYPE html>
@@ -507,7 +508,7 @@ def make_shorts_916_cover(urdu_text, english_title="www.ummat.net", news_img_pat
     <body>
         <div class="bg-overlay"></div>
         <div class="header-bar">{english_title}</div>
-        {"<img class='logo' src='" + logo_b64 + "'>" if logo_b64 else ""}
+        {logo_tag}
         <div class="text-card">{clean_text}</div>
     </body>
     </html>
