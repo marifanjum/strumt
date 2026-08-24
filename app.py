@@ -368,12 +368,21 @@ elif tab_choice == "🔗 Card from URL":
 
                         browser.close()
 
-                    # 3. Save the image if extracted
+                   # 3. Save the image if extracted
                     if extracted_b64 and "base64," in extracted_b64:
-                        raw_data = extracted_b64.split("base64,")[1]
-                        img_path = os.path.join(tempfile.gettempdir(), f"extracted_{os.urandom(4).hex()}.jpg")
+                        header, raw_data = extracted_b64.split("base64,", 1)
+                        
+                        # Auto-detect extension from Data URL header
+                        ext = ".jpg"
+                        if "image/png" in header:
+                            ext = ".png"
+                        elif "image/webp" in header:
+                            ext = ".webp"
+                    
+                        img_path = os.path.join(tempfile.gettempdir(), f"extracted_{os.urandom(4).hex()}{ext}")
                         with open(img_path, "wb") as f:
-                            f.write(base64.b64decode(raw_data))
+                            f.write(base64.b64decode(raw_data.strip()))
+                        
                         st.info("✅ Original story image successfully captured from website.")
                     else:
                         st.warning("⚠️ Could not capture website image, using AI fallback.")
