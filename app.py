@@ -5,6 +5,7 @@ import urllib.parse
 import pathlib
 import json
 import re
+import base64
 import traceback
 from datetime import datetime
 import requests
