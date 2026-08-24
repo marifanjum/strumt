@@ -173,11 +173,11 @@ def post_to_wordpress(title, content, wp_url, wp_user, wp_pass, excerpt="", medi
         "status": status,
     }
     
-    # Explicitly register the Featured Image ID in the post creation payload
     if media_id:
         try:
             payload["featured_media"] = int(media_id)
-            print(f"🖼️ Assigning featured_media: {int(media_id)} to post payload")
+            # Force standard post_meta thumbnail key for SEO plugins
+            payload["meta"] = {"_thumbnail_id": int(media_id)}
         except Exception as e:
             print(f"⚠️ Error setting featured_media in payload: {e}")
         
@@ -193,9 +193,10 @@ def post_to_wordpress(title, content, wp_url, wp_user, wp_pass, excerpt="", medi
             post_id = post_data.get("id")
             post_link = post_data.get("link")
 
-            # Attach media parent relationship if media_id exists
+            # Link the media attachment to the post as parent and trigger standard update hook
             if media_id and post_id:
                 try:
+                    # 1. Attach media to post parent
                     requests.post(
                         f"{media_url}/{int(media_id)}",
                         data=json.dumps({"post": int(post_id)}),
@@ -203,8 +204,16 @@ def post_to_wordpress(title, content, wp_url, wp_user, wp_pass, excerpt="", medi
                         timeout=10,
                         verify=False
                     )
+                    # 2. Trigger instant post-update hook so WP flushes SEO and og:image cache
+                    requests.post(
+                        f"{posts_url}/{int(post_id)}",
+                        data=json.dumps({"featured_media": int(media_id)}),
+                        headers=headers,
+                        timeout=10,
+                        verify=False
+                    )
                 except Exception as attach_err:
-                    print(f"⚠️ Notice on attaching media parent: {attach_err}")
+                    print(f"⚠️ Notice on attaching media: {attach_err}")
 
             print(f"✅ WordPress Post Published: {post_link} (Featured Media ID: {post_data.get('featured_media')})")
             return post_link
