@@ -188,15 +188,28 @@ if tab_choice == "📝 Direct Story Publisher":
                             f.write(img_resp.content)
                         card_img_source = temp_p
 
-                media_id = None
-                if resolved_img_path:
-                    media_id = get_media_id_from_url(resolved_img_path, WP_URL, WP_USER, WP_PASS, caption_text=image_caption)
-
-                posted_link = post_to_wordpress(
-                    title=title, content=html_content, wp_url=WP_URL,
-                    wp_user=WP_USER, wp_pass=WP_PASS,
-                    excerpt=excerpt, media_id=media_id, status=pub_status, category_ids=category_ids
-                )
+                    media_id = None
+                    if resolved_img_path:
+                        media_id = upload_media_to_wordpress(
+                            image_source=resolved_img_path,
+                            wp_url=WP_URL,
+                            wp_user=WP_USER,
+                            wp_pass=WP_PASS,
+                            title_text=title,
+                            caption_text=image_caption
+                        )
+                    
+                    posted_link = post_to_wordpress(
+                        title=title,
+                        content=html_content,
+                        wp_url=WP_URL,
+                        wp_user=WP_USER,
+                        wp_pass=WP_PASS,
+                        excerpt=excerpt,
+                        media_id=media_id,
+                        status=pub_status,
+                        category_ids=category_ids
+                    )
 
                 if posted_link:
                     st.success(f"Story successfully published! [View Live Post]({posted_link})")
