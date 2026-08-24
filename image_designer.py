@@ -100,7 +100,6 @@ def img_to_base64(img_path):
     if not img_path or not isinstance(img_path, (str, bytes, os.PathLike)):
         return ""
 
-    # If it's already a full data URI, return as-is
     str_path = str(img_path).strip()
     if str_path.startswith("data:image"):
         return str_path
@@ -117,7 +116,6 @@ def img_to_base64(img_path):
                     return ""
                 encoded_string = base64.b64encode(raw_bytes).decode('utf-8')
                 
-                # Detect MIME type
                 ext = str(real_path).split('.')[-1].lower()
                 if ext in ["jpg", "jpeg"]:
                     mime = "image/jpeg"
@@ -131,16 +129,29 @@ def img_to_base64(img_path):
     return ""
 
 
-def font_to_base64(font_path):
-    if not font_path:
-        return ""
-    real_path = resource_path(str(font_path))
-    if not os.path.exists(real_path):
-        real_path = str(font_path)
+def font_to_base64(font_path=None):
+    candidates = [
+        font_path,
+        "jameel custom.ttf",
+        "Jameel Custom.ttf",
+        "jameel_custom.ttf",
+        "JameelCustom.ttf",
+        "Jameel Noori Nastaleeq.ttf",
+        "Jameel Noori Nastaleeq Regular.ttf",
+        "Jameel Noori Kasheeda.ttf",
+        "urdu_font.ttf"
+    ]
+    resolved = None
+    for c in candidates:
+        if c:
+            p = resource_path(str(c))
+            if os.path.exists(p):
+                resolved = p
+                break
 
-    if os.path.exists(real_path):
+    if resolved and os.path.exists(resolved):
         try:
-            with open(real_path, "rb") as font_file:
+            with open(resolved, "rb") as font_file:
                 encoded_string = base64.b64encode(font_file.read()).decode('utf-8')
                 return f"data:font/ttf;charset=utf-8;base64,{encoded_string}"
         except Exception as e:
@@ -228,10 +239,13 @@ def create_ummat_social_card(
 
     if not font_path:
         possible_fonts = [
+            "jameel custom.ttf",
+            "Jameel Custom.ttf",
+            "jameel_custom.ttf",
+            "JameelCustom.ttf",
             "Jameel Noori Nastaleeq.ttf", 
             "Jameel Noori Nastaleeq Regular.ttf", 
             "Jameel Noori Kasheeda.ttf",
-            "jameel.ttf", 
             "urdu_font.ttf"
         ]
         for f in possible_fonts:
