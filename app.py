@@ -10,6 +10,7 @@ from datetime import datetime
 import requests
 from bs4 import BeautifulSoup
 import markdown
+from playwright.sync_api import sync_playwright
 
 # Core Modules
 from wp_publisher import post_to_wordpress, get_media_id_from_url, fetch_wordpress_categories
