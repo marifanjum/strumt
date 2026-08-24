@@ -5,6 +5,7 @@ import urllib.parse
 import pathlib
 import json
 import re
+import traceback
 from datetime import datetime
 import requests
 from bs4 import BeautifulSoup
@@ -22,7 +23,6 @@ st.set_page_config(page_title="Ummat News Studio & Direct Publisher", layout="wi
 # --- PASSWORD PROTECTION GATE ---
 def check_password():
     """Returns `True` if the user entered the correct password."""
-    
     def password_entered():
         if st.session_state["password"] == st.secrets.get("auth", {}).get("password", "999999"):
             st.session_state["password_correct"] = True
@@ -55,11 +55,15 @@ if not check_password():
 
 st.title("⚡ Direct Story Publisher & Studio Pro")
 
-# Initialize Playwright browser binaries for cloud environment
+# Initialize Playwright browser binaries and Linux shared libraries for cloud environment
 @st.cache_resource
 def init_playwright():
     import subprocess
-    subprocess.run(["playwright", "install", "chromium"])
+    try:
+        subprocess.run(["playwright", "install", "chromium"], check=True)
+        subprocess.run(["playwright", "install-deps", "chromium"], check=False)
+    except Exception as e:
+        print("Playwright install notice:", e)
 
 init_playwright()
 
@@ -206,10 +210,12 @@ if tab_choice == "📝 Direct Story Publisher":
                             headline_text=title, news_img_path=card_img_source,
                             template_path=TEMPLATE_PATH, output_path=card_file
                         )
-                        if os.path.exists(card_file):
+                        if os.path.exists(card_file) and os.path.getsize(card_file) > 0:
                             st.image(card_file, caption="Generated Social Media Card")
                             with open(card_file, "rb") as cf:
                                 st.download_button("📥 Download Social Card", cf.read(), file_name=final_filename, mime="image/png")
+                        else:
+                            st.error(f"Renderer failed to write card at: {card_file}")
 
                     if mode == "seo":
                         ai_active_key = GROQ_KEY if AI_PROVIDER == "Groq (Llama)" else (GEMINI_KEY if AI_PROVIDER == "Google Gemini" else OPENAI_KEY)
@@ -222,6 +228,7 @@ if tab_choice == "📝 Direct Story Publisher":
                     st.error("Could not publish to WordPress.")
             except Exception as e:
                 st.error(f"Publishing failed: {e}")
+                st.code(traceback.format_exc())
 
     with action_cols[0]:
         if st.button("🚀 Post Only"): process_publishing("post")
@@ -317,15 +324,16 @@ elif tab_choice == "🔗 Card from URL":
                         template_path=TEMPLATE_PATH, output_path=card_file
                     )
                     
-                    if os.path.exists(card_file):
+                    if os.path.exists(card_file) and os.path.getsize(card_file) > 0:
                         st.success("Social card generated successfully!")
                         st.image(card_file, caption="Generated Card Preview")
                         with open(card_file, "rb") as cf:
                             st.download_button("📥 Download Card", cf.read(), file_name=final_filename, mime="image/png")
                     else:
-                        st.error("Card image file was not created by the renderer.")
+                        st.error(f"Renderer failed to write card image at: {card_file}")
                 except Exception as e:
                     st.error(f"Card generation failed: {e}")
+                    st.code(traceback.format_exc())
 
 # --- TAB 5: BRANDING & SETTINGS ---
 elif tab_choice == "⚙️ Branding & Settings":
