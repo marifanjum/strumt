@@ -4,7 +4,6 @@ import base64
 import os
 from bs4 import BeautifulSoup
 import urllib.parse
-import mimetypes
 import re
 
 def get_headers(wp_user, wp_pass):
@@ -20,9 +19,10 @@ def format_wp_urls(base_url):
     media_url = f"{clean_url}/wp-json/wp/v2/media"
     return clean_url, posts_url, media_url
 
-def get_media_id_from_url(image_source, wp_url, wp_user, wp_pass, caption_text=""):
+def upload_media_to_wordpress(image_source, wp_url, wp_user, wp_pass, title_text="", caption_text=""):
     """
-    سائٹ کے اپنے URL کو پہچانتا ہے، سائز کے لاحقے (dimensions) ہٹا کر میچ کرتا ہے، اور دوبارہ اپ لوڈ ہونے سے روکتا ہے۔
+    Downloads/reads the image and uploads it to the WordPress Media Library
+    with complete WordPress-native metadata (Title, Caption, Alt Text, Description).
     """
     if not image_source or not wp_url or not wp_user or not wp_pass:
         return None
@@ -31,65 +31,64 @@ def get_media_id_from_url(image_source, wp_url, wp_user, wp_pass, caption_text="
     headers = get_headers(wp_user, wp_pass)
     clean_source = str(image_source).strip().strip("'").strip('"')
 
-    # 1. Check if the image belongs to the own site
+    # 1. Check if the image already exists in WP Media Library
     if clean_source.startswith("http") and clean_base_url in clean_source:
         try:
             parsed_url = urllib.parse.urlparse(clean_source)
-            full_filename = os.path.basename(parsed_url.path) # e.g., 'hafiz-naeem.jpg'
+            full_filename = os.path.basename(parsed_url.path)
             base_name, _ = os.path.splitext(full_filename)
-            
             core_name = re.sub(r'-\d+x\d+$', '', base_name).lower()
-            print(f"🔍 Direct WP Search for file: '{full_filename}' (Core: '{core_name}')")
 
             search_url = f"{media_url}?search={urllib.parse.quote(core_name)}&per_page=20"
             res = requests.get(search_url, headers=headers, timeout=15, verify=False)
             
             if res.status_code == 200:
-                media_items = res.json()
-                for item in media_items:
+                for item in res.json():
                     stored_url = item.get('source_url', '')
                     if full_filename.lower() in stored_url.lower() or core_name in stored_url.lower():
                         existing_id = item.get('id')
-                        print(f"✅ Exact match found via WP Search! Media ID: {existing_id} (URL: {stored_url})")
+                        print(f"✅ Found existing media in library: ID {existing_id}")
                         return existing_id
         except Exception as e:
-            print(f"⚠️ API library lookup error: {e}")
+            print(f"⚠️ Media search error: {e}")
 
-    # 2. Proceed to upload ONLY if it is truly a new external/local file not found in library
-    print(f"ℹ️ Image not found in library or is external, uploading: {clean_source}")
-    
+    # 2. Extract and download the raw image bytes
     try:
         file_bytes = None
-        filename = "uploaded_image.jpg"
+        filename = "story_image.jpg"
+        browser_headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8'
+        }
 
         if os.path.exists(clean_source):
             filename = os.path.basename(clean_source)
             with open(clean_source, "rb") as f:
                 file_bytes = f.read()
-        else:
+        elif clean_source.startswith("http"):
             target_img_url = clean_source
-            if not target_img_url.lower().endswith(('png', 'jpg', 'jpeg', 'webp', 'gif')):
-                res = requests.get(target_img_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=10, verify=False)
-                soup = BeautifulSoup(res.text, 'html.parser')
-                meta_img = soup.find('meta', property='og:image') or soup.find('meta', attrs={'name': 'twitter:image'})
+            if not target_img_url.lower().split('?')[0].endswith(('png', 'jpg', 'jpeg', 'webp', 'gif')):
+                page_res = requests.get(target_img_url, headers=browser_headers, timeout=15, verify=False)
+                soup = BeautifulSoup(page_res.text, 'html.parser')
+                meta_img = soup.find('meta', property='og:image:secure_url') or soup.find('meta', property='og:image')
                 if meta_img and meta_img.get('content'):
                     target_img_url = meta_img['content']
                 else:
-                    img_tag = soup.find('img')
-                    if img_tag and img_tag.get('src'):
-                        target_img_url = img_tag['src']
+                    img_tag = soup.select_one('.wp-post-image, .featured-image img, article img, .entry-content img, img')
+                    if img_tag:
+                        target_img_url = img_tag.get('data-orig-file') or img_tag.get('src')
+
                 if not target_img_url.startswith('http'):
                     target_img_url = urllib.parse.urljoin(clean_source, target_img_url)
 
-            filename = target_img_url.split('/')[-1].split('?')[0]
-            if not filename:
-                filename = "web_image.jpg"
-
-            img_resp = requests.get(target_img_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=15, verify=False)
-            if img_resp.status_code == 200:
+            img_resp = requests.get(target_img_url, headers=browser_headers, timeout=20, verify=False)
+            if img_resp.status_code == 200 and len(img_resp.content) > 1000:
                 file_bytes = img_resp.content
+                raw_name = target_img_url.split('/')[-1].split('?')[0]
+                filename = raw_name if '.' in raw_name else f"news_{os.urandom(3).hex()}.jpg"
 
-        if file_bytes:
+        # 3. Upload Binary to WordPress Media REST Endpoint
+        if file_bytes and len(file_bytes) > 1000:
             ext = filename.split('.')[-1].lower()
             if ext not in ['png', 'jpg', 'jpeg', 'webp']:
                 filename = filename.rsplit('.', 1)[0] + ".jpg"
@@ -105,17 +104,29 @@ def get_media_id_from_url(image_source, wp_url, wp_user, wp_pass, caption_text="
             if upload_res.status_code in [200, 201]:
                 media_data = upload_res.json()
                 new_id = media_data.get('id')
-                print(f"✅ Successfully Uploaded New Media ID: {new_id}")
+                print(f"✅ Successfully Uploaded Media ID: {new_id} ({filename})")
 
-                if caption_text and caption_text.strip():
-                    update_url = f"{media_url}/{new_id}"
-                    update_payload = {
-                        "caption": {"raw": caption_text.strip()},
-                        "alt_text": caption_text.strip()
-                    }
-                    update_headers = headers.copy()
-                    update_headers['Content-Type'] = 'application/json; charset=utf-8'
-                    requests.post(update_url, data=json.dumps(update_payload, ensure_ascii=False).encode('utf-8'), headers=update_headers, timeout=15, verify=False)
+                # 4. Set Standard WordPress Media Metadata
+                meta_label = caption_text.strip() if (caption_text and caption_text.strip()) else title_text.strip()
+                if not meta_label:
+                    meta_label = filename.rsplit('.', 1)[0]
+
+                update_payload = {
+                    "title": meta_label,
+                    "caption": meta_label,
+                    "alt_text": meta_label,
+                    "description": meta_label
+                }
+                
+                update_headers = headers.copy()
+                update_headers['Content-Type'] = 'application/json; charset=utf-8'
+                requests.post(
+                    f"{media_url}/{new_id}",
+                    data=json.dumps(update_payload, ensure_ascii=False).encode('utf-8'),
+                    headers=update_headers,
+                    timeout=15,
+                    verify=False
+                )
 
                 return new_id
             else:
@@ -124,7 +135,10 @@ def get_media_id_from_url(image_source, wp_url, wp_user, wp_pass, caption_text="
     except Exception as e:
         print(f"❌ Error handling media upload: {e}")
         
-    return None  # 💡 Fixed trailing typo 'Nonep'
+    return None
+
+# Backward compatibility alias
+get_media_id_from_url = upload_media_to_wordpress
 
 def fetch_wordpress_categories(wp_url, wp_user, wp_pass):
     if not wp_url or not wp_user or not wp_pass:
@@ -148,7 +162,7 @@ def post_to_wordpress(title, content, wp_url, wp_user, wp_pass, excerpt="", medi
     if not wp_url or not wp_user or not wp_pass:
         raise ValueError("Missing WordPress credentials.")
 
-    _, posts_url, _ = format_wp_urls(wp_url)
+    clean_base_url, posts_url, media_url = format_wp_urls(wp_url)
     headers = get_headers(wp_user, wp_pass)
     headers['Content-Type'] = 'application/json; charset=utf-8'
 
@@ -159,12 +173,13 @@ def post_to_wordpress(title, content, wp_url, wp_user, wp_pass, excerpt="", medi
         "status": status,
     }
     
+    # Explicitly register the Featured Image ID in the post creation payload
     if media_id:
         try:
             payload["featured_media"] = int(media_id)
-            print(f"🖼️ Setting Featured Thumbnail ID for post: {int(media_id)}")
+            print(f"🖼️ Assigning featured_media: {int(media_id)} to post payload")
         except Exception as e:
-            print(f"⚠️ Error setting featured_media: {e}")
+            print(f"⚠️ Error setting featured_media in payload: {e}")
         
     if category_ids:
         payload["categories"] = [int(cat_id) for cat_id in category_ids]
@@ -172,9 +187,25 @@ def post_to_wordpress(title, content, wp_url, wp_user, wp_pass, excerpt="", medi
     try:
         json_data = json.dumps(payload, ensure_ascii=False).encode('utf-8')
         response = requests.post(posts_url, data=json_data, headers=headers, verify=False)
+        
         if response.status_code in [200, 201]:
             post_data = response.json()
+            post_id = post_data.get("id")
             post_link = post_data.get("link")
+
+            # Attach media parent relationship if media_id exists
+            if media_id and post_id:
+                try:
+                    requests.post(
+                        f"{media_url}/{int(media_id)}",
+                        data=json.dumps({"post": int(post_id)}),
+                        headers=headers,
+                        timeout=10,
+                        verify=False
+                    )
+                except Exception as attach_err:
+                    print(f"⚠️ Notice on attaching media parent: {attach_err}")
+
             print(f"✅ WordPress Post Published: {post_link} (Featured Media ID: {post_data.get('featured_media')})")
             return post_link
         else:
