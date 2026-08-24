@@ -3,6 +3,7 @@ import sys
 import json
 import base64
 import tempfile
+import glob
 from datetime import datetime
 from PIL import Image, ImageOps
 from playwright.sync_api import sync_playwright
@@ -12,7 +13,8 @@ import streamlit as st
 # 1. PAGE SETUP & CONFIG
 # ---------------------------------------------------------
 st.set_page_config(
-    page_title="AI StoryShare Social Card Producer",
+    page_title="NewsApp2026 - AI Social Card Studio",
+    page_icon="📰",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -28,6 +30,11 @@ DEFAULT_CONFIG = {
     "groq_api_key": "",
     "groq_model": "llama-3.2-11b-vision-preview"
 }
+
+def get_output_dir():
+    out_dir = os.path.join(tempfile.gettempdir(), "NewsAppOutputs")
+    os.makedirs(out_dir, exist_ok=True)
+    return out_dir
 
 def load_settings():
     if os.path.exists(CONFIG_FILE):
@@ -106,13 +113,13 @@ def prepare_image(img_path, target_w, target_h, remove_bg=False):
     else:
         img = ImageOps.fit(img, (int(target_w), int(target_h)), Image.Resampling.LANCZOS)
 
-    temp_dir = tempfile.gettempdir()
+    temp_dir = get_output_dir()
     temp_out = os.path.join(temp_dir, f"temp_var_{os.path.basename(str(img_path))}.png")
     img.save(temp_out, "PNG")
     return temp_out
 
 # ---------------------------------------------------------
-# 3. AI STRUCTURE & CARD RENDERING
+# 3. AI STRUCTURE & CARD RENDERING ENGINE
 # ---------------------------------------------------------
 def analyze_editorial(raw_text, image_paths, provider, config):
     img_count = len(image_paths)
@@ -186,7 +193,7 @@ def analyze_editorial(raw_text, image_paths, provider, config):
             )
             return json.loads(response.choices[0].message.content)
     except Exception as e:
-        st.warning(f"AI parsing fallback active ({e})")
+        st.warning(f"AI auto-parser notice: Defaulting to structured segmentation ({e})")
 
     lines = [l.strip() for l in raw_text.split('\n') if l.strip()]
     return {
@@ -198,7 +205,7 @@ def analyze_editorial(raw_text, image_paths, provider, config):
         "accent_color": "#dc2626"
     }
 
-def render_html_to_image(template_path, image_paths, raw_text, layout_override, design):
+def render_html_to_image(template_path, image_paths, raw_text, layout_override, design, prefix="card"):
     template_b64 = img_to_base64(template_path)
     font_b64 = font_to_base64()
 
@@ -343,9 +350,8 @@ def render_html_to_image(template_path, image_paths, raw_text, layout_override, 
     </html>
     """
 
-    out_dir = os.path.join(tempfile.gettempdir(), "NewsAppOutputs")
-    os.makedirs(out_dir, exist_ok=True)
-    output_path = os.path.join(out_dir, f"card_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
+    out_dir = get_output_dir()
+    output_path = os.path.join(out_dir, f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
 
     with sync_playwright() as p:
         chrome_exe = get_chromium_executable_path()
@@ -363,23 +369,24 @@ def render_html_to_image(template_path, image_paths, raw_text, layout_override, 
     return output_path
 
 # ---------------------------------------------------------
-# 4. STREAMLIT UI LAYOUT
+# 4. SIDEBAR SETTINGS & ENGINE CONFIG
 # ---------------------------------------------------------
 config = load_settings()
 
 with st.sidebar:
-    st.header("⚙️ Settings")
-    pin = st.text_input("Admin PIN", type="password")
+    st.header("⚙️ Global Settings")
+    pin = st.text_input("Admin PIN", type="password", placeholder="Enter 6-digit PIN")
+    
     if pin == PASSWORD_PIN:
-        st.success("Unlocked")
+        st.success("Admin Panel Unlocked")
         gemini_key = st.text_input("Gemini API Key", value=config.get("gemini_api_key", ""), type="password")
         gemini_model = st.text_input("Gemini Model", value=config.get("gemini_model", "gemini-2.5-flash"))
         openai_key = st.text_input("OpenAI API Key", value=config.get("openai_api_key", ""), type="password")
         openai_model = st.text_input("OpenAI Model", value=config.get("openai_model", "gpt-4o"))
         groq_key = st.text_input("Groq API Key", value=config.get("groq_api_key", ""), type="password")
         groq_model = st.text_input("Groq Model", value=config.get("groq_model", "llama-3.2-11b-vision-preview"))
-        
-        if st.button("Save Settings"):
+
+        if st.button("Save Settings", use_container_width=True):
             save_settings({
                 "gemini_api_key": gemini_key.strip(),
                 "gemini_model": gemini_model.strip(),
@@ -388,79 +395,214 @@ with st.sidebar:
                 "groq_api_key": groq_key.strip(),
                 "groq_model": groq_model.strip()
             })
-            st.toast("Settings saved!", icon="✅")
+            st.toast("Settings saved successfully!", icon="✅")
+    elif pin:
+        st.error("Invalid PIN")
 
-st.title("AI StoryShare Social Card Producer")
+# ---------------------------------------------------------
+# 5. MULTI-TAB APPLICATION INTERFACE
+# ---------------------------------------------------------
+st.title("NewsApp2026 Studio")
 
-col_left, col_right = st.columns([1, 1], gap="large")
+tab1, tab2, tab3, tab4 = st.tabs([
+    "🎨 Story Card Studio", 
+    "🔗 URL / Quick Card", 
+    "📦 Batch Producer", 
+    "📁 Generated Archive"
+])
 
-with col_left:
-    provider = st.selectbox("Vision AI Provider", ["Gemini", "OpenAI", "Groq"])
-    
-    layout_style = st.selectbox(
-        "Card Layout Style",
-        [
-            "Auto (AI Decides)",
-            "Single Split (Story Share)",
-            "Hero Banner (Wide Photo + Breaking News)",
-            "Big Quote (Editorial Spotlight)"
-        ]
-    )
+# ==========================================
+# TAB 1: STORY CARD STUDIO
+# ==========================================
+with tab1:
+    col1, col2 = st.columns([1, 1], gap="large")
 
-    uploaded_images = st.file_uploader(
-        "Subject Images (1 or 2 files)",
-        type=["png", "jpg", "jpeg", "webp"],
-        accept_multiple_files=True
-    )
+    with col1:
+        st.subheader("Card Configuration")
+        c1_prov, c1_layout = st.columns(2)
+        with c1_prov:
+            provider = st.selectbox("Vision AI Engine", ["Gemini", "OpenAI", "Groq"], key="t1_prov")
+        with c1_layout:
+            layout_style = st.selectbox(
+                "Layout Style",
+                [
+                    "Auto (AI Decides)",
+                    "Single Split (Story Share)",
+                    "Hero Banner (Wide Photo + Breaking News)",
+                    "Big Quote (Editorial Spotlight)"
+                ],
+                key="t1_layout"
+            )
 
-    raw_text = st.text_area(
-        "Raw Urdu Story / News Content",
-        height=200,
-        placeholder="یہاں خبر، سرخی، اقتباس یا مکمل متن درج کریں..."
-    )
+        uploaded_images = st.file_uploader(
+            "Subject Images (1 or 2 files)",
+            type=["png", "jpg", "jpeg", "webp"],
+            accept_multiple_files=True,
+            key="t1_imgs"
+        )
 
-    generate_btn = st.button("Generate Social Card", type="primary", use_container_width=True)
+        raw_text = st.text_area(
+            "Urdu News / Story Text",
+            height=220,
+            placeholder="یہاں خبر، سرخی، اقتباس یا مکمل متن درج کریں...",
+            key="t1_text"
+        )
 
-with col_right:
-    st.subheader("Card Preview")
-    preview_placeholder = st.empty()
+        gen_btn = st.button("✨ Generate Social Card", type="primary", use_container_width=True, key="t1_gen")
 
-    if generate_btn:
-        if not raw_text.strip():
-            st.warning("Please enter some Urdu text.")
-        else:
-            with st.spinner("Generating card..."):
-                saved_img_paths = []
-                if uploaded_images:
-                    temp_dir = tempfile.gettempdir()
-                    for img_file in uploaded_images[:2]:
-                        t_path = os.path.join(temp_dir, img_file.name)
-                        with open(t_path, "wb") as f:
-                            f.write(img_file.read())
-                        saved_img_paths.append(t_path)
+    with col2:
+        st.subheader("Card Live Preview")
+        preview_box = st.empty()
 
-                layout_map = {
-                    "Auto (AI Decides)": "Auto (AI Decides)",
-                    "Single Split (Story Share)": "single_split",
-                    "Hero Banner (Wide Photo + Breaking News)": "hero_banner",
-                    "Big Quote (Editorial Spotlight)": "big_quote"
-                }
-                chosen_layout = layout_map.get(layout_style, "single_split")
-                template_path = "StoryShareTemplate.png"
+        if gen_btn:
+            if not raw_text.strip():
+                st.warning("Please paste or type the Urdu news content.")
+            else:
+                with st.spinner("Analyzing text layout & generating card..."):
+                    saved_paths = []
+                    if uploaded_images:
+                        t_dir = get_output_dir()
+                        for f in uploaded_images[:2]:
+                            p = os.path.join(t_dir, f.name)
+                            with open(p, "wb") as buffer:
+                                buffer.write(f.read())
+                            saved_paths.append(p)
+
+                    layout_map = {
+                        "Auto (AI Decides)": "Auto (AI Decides)",
+                        "Single Split (Story Share)": "single_split",
+                        "Hero Banner (Wide Photo + Breaking News)": "hero_banner",
+                        "Big Quote (Editorial Spotlight)": "big_quote"
+                    }
+                    chosen = layout_map.get(layout_style, "single_split")
+
+                    try:
+                        design = analyze_editorial(raw_text, saved_paths, provider, config)
+                        card_path = render_html_to_image("StoryShareTemplate.png", saved_paths, raw_text, chosen, design, prefix="story_card")
+                        
+                        preview_box.image(card_path, use_container_width=True)
+                        with open(card_path, "rb") as file_data:
+                            st.download_button(
+                                label="📥 Download Card (High-Res)",
+                                data=file_data.read(),
+                                file_name=os.path.basename(card_path),
+                                mime="image/png",
+                                use_container_width=True
+                            )
+                    except Exception as e:
+                        st.error(f"Card generation error: {str(e)}")
+
+# ==========================================
+# TAB 2: URL / QUICK CARD
+# ==========================================
+with tab2:
+    st.subheader("Generate Direct Card from Web URL / Article")
+    col_u1, col_u2 = st.columns([1, 1], gap="large")
+
+    with col_u1:
+        target_url = st.text_input("News Article URL", placeholder="https://example.com/news-story")
+        url_text = st.text_area("Or Quick Headline & Summary", height=140, placeholder="سوشل میڈیا سرخی اور متن...")
+        url_img = st.file_uploader("Featured Article Image", type=["png", "jpg", "jpeg", "webp"], key="t2_img")
+        url_btn = st.button("🚀 Render URL Quick Card", type="primary", use_container_width=True, key="t2_btn")
+
+    with col_u2:
+        st.subheader("Generated URL Preview")
+        url_preview = st.empty()
+
+        if url_btn:
+            content_to_use = url_text.strip() or f"Breaking News Story:\n{target_url}"
+            with st.spinner("Processing article content..."):
+                saved_paths = []
+                if url_img:
+                    t_dir = get_output_dir()
+                    p = os.path.join(t_dir, url_img.name)
+                    with open(p, "wb") as buffer:
+                        buffer.write(url_img.read())
+                    saved_paths.append(p)
 
                 try:
-                    design = analyze_editorial(raw_text, saved_img_paths, provider, config)
-                    out_card = render_html_to_image(template_path, saved_img_paths, raw_text, chosen_layout, design)
+                    design = analyze_editorial(content_to_use, saved_paths, "Gemini", config)
+                    out_path = render_html_to_image("StoryShareTemplate.png", saved_paths, content_to_use, "single_split", design, prefix="url_card")
                     
-                    preview_placeholder.image(out_card, use_container_width=True)
-                    
-                    with open(out_card, "rb") as f:
+                    url_preview.image(out_path, use_container_width=True)
+                    with open(out_path, "rb") as f_data:
                         st.download_button(
-                            label="📥 Download Generated Card",
-                            data=f.read(),
-                            file_name=os.path.basename(out_card),
+                            label="📥 Download URL Card",
+                            data=f_data.read(),
+                            file_name=os.path.basename(out_path),
                             mime="image/png",
                             use_container_width=True
                         )
                 except Exception as e:
-                    st.error(f"Generation failed: {str(e)}")
+                    st.error(f"URL card generation failed: {str(e)}")
+
+# ==========================================
+# TAB 3: BATCH PRODUCER
+# ==========================================
+with tab3:
+    st.subheader("Batch News Card Processing")
+    st.caption("Paste multiple stories separated by '---' to render and download cards simultaneously.")
+
+    batch_input = st.text_area(
+        "Batch Urdu Stories",
+        height=260,
+        placeholder="پہلی خبر کی سرخی اور متن\n---\nدوسری خبر کی سرخی اور تفصیل\n---\nتیسری اہم ترین بریکنگ نیوز..."
+    )
+    batch_btn = st.button("⚡ Process Batch Stories", type="primary")
+
+    if batch_btn:
+        stories = [s.strip() for s in batch_input.split("---") if s.strip()]
+        if not stories:
+            st.warning("Please provide at least one story block separated by '---'.")
+        else:
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            batch_cols = st.columns(min(len(stories), 3))
+
+            for idx, story in enumerate(stories):
+                status_text.text(f"Processing story {idx+1} of {len(stories)}...")
+                try:
+                    design = analyze_editorial(story, [], "Gemini", config)
+                    card_file = render_html_to_image("StoryShareTemplate.png", [], story, "big_quote", design, prefix=f"batch_card_{idx+1}")
+                    
+                    col_target = batch_cols[idx % 3]
+                    with col_target:
+                        st.image(card_file, caption=f"Story #{idx+1}")
+                        with open(card_file, "rb") as bf:
+                            st.download_button(
+                                label=f"Download #{idx+1}",
+                                data=bf.read(),
+                                file_name=os.path.basename(card_file),
+                                mime="image/png",
+                                key=f"batch_dl_{idx}"
+                            )
+                except Exception as e:
+                    st.error(f"Failed to process story #{idx+1}: {e}")
+
+                progress_bar.progress((idx + 1) / len(stories))
+            status_text.success("Batch generation complete!")
+
+# ==========================================
+# TAB 4: GENERATED ARCHIVE
+# ==========================================
+with tab4:
+    st.subheader("Card Output Library")
+    out_dir = get_output_dir()
+    existing_cards = sorted(glob.glob(os.path.join(out_dir, "*.png")), key=os.path.getmtime, reverse=True)
+
+    if not existing_cards:
+        st.info("No rendered cards in this session yet. Generate cards in Tab 1, 2, or 3 to see them here.")
+    else:
+        st.write(f"Total Generated Assets: **{len(existing_cards)}**")
+        arch_cols = st.columns(4)
+        for i, card_path in enumerate(existing_cards[:16]):
+            with arch_cols[i % 4]:
+                st.image(card_path, use_container_width=True)
+                with open(card_path, "rb") as cf:
+                    st.download_button(
+                        label="Download",
+                        data=cf.read(),
+                        file_name=os.path.basename(card_path),
+                        mime="image/png",
+                        key=f"arch_dl_{i}"
+                    )
