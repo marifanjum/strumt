@@ -287,7 +287,7 @@ elif tab_choice == "🔗 Card from URL":
         if not url_input.strip():
             st.warning("Please enter story URL!")
         else:
-            with st.spinner("Fetching story and grabbing original image directly via browser session..."):
+            with st.spinner("Extracting story headline and featured image via browser..."):
                 try:
                     headline = ""
                     img_path = None
@@ -297,56 +297,87 @@ elif tab_choice == "🔗 Card from URL":
                         browser = launch_browser_safely(p)
                         context = browser.new_context(
                             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                            viewport={"width": 1280, "height": 800}
+                            viewport={"width": 1280, "height": 900}
                         )
                         page = context.new_page()
-                        page.goto(url_input, wait_until="domcontentloaded", timeout=35000)
-                        page.wait_for_timeout(1500)
+                        page.goto(url_input, wait_until="domcontentloaded", timeout=40000)
+                        page.wait_for_timeout(2000)
 
                         # 1. Extract Headline
-                        title_el = page.query_selector("h1, .entry-title, .post-title, meta[property='og:title']")
-                        if title_el:
-                            tag_name = title_el.evaluate("el => el.tagName").lower()
-                            if tag_name == "meta":
-                                headline = title_el.get_attribute("content") or ""
-                            else:
-                                headline = title_el.inner_text().strip()
+                        title_data = page.evaluate("""() => {
+                            const metaTitle = document.querySelector('meta[property="og:title"]');
+                            if (metaTitle && metaTitle.content) return metaTitle.content;
+                            const h1 = document.querySelector('h1, .entry-title, .post-title');
+                            if (h1 && h1.innerText) return h1.innerText;
+                            return document.title;
+                        }""")
                         
-                        if not headline:
-                            headline = page.title()
-
+                        headline = str(title_data).strip()
                         headline = re.sub(r'\s*[-–|—]\s*(روزنامہ\s*امت|Ummat|Daily Ummat).*$', '', headline, flags=re.I).strip()
 
-                        # 2. Extract Featured Image Element
-                        img_elem = page.query_selector(
-                            ".wp-post-image, .featured-image img, article img, .post-thumbnail img, .entry-content img, meta[property='og:image']"
-                        )
+                        # 2. Extract and Convert Image to Base64 directly inside the browser
+                        extracted_b64 = page.evaluate("""async () => {
+                            // Find the best image source
+                            let targetSrc = null;
 
-                        # Capture raw image buffer directly from the browser context
-                        if img_elem:
-                            tag = img_elem.evaluate("el => el.tagName").lower()
-                            if tag == "meta":
-                                og_url = img_elem.get_attribute("content")
-                                if og_url:
-                                    img_res = page.request.get(og_url)
-                                    if img_res.status == 200:
-                                        img_bytes = img_res.body()
-                                        img_path = os.path.join(tempfile.gettempdir(), f"fetched_{os.urandom(4).hex()}.jpg")
-                                        with open(img_path, "wb") as f:
-                                            f.write(img_bytes)
-                            else:
-                                # Direct element screenshot (guarantees exact image without re-requesting from server)
-                                img_path = os.path.join(tempfile.gettempdir(), f"fetched_{os.urandom(4).hex()}.png")
-                                img_elem.screenshot(path=img_path)
+                            // Check og:image meta first
+                            const ogImg = document.querySelector('meta[property="og:image"], meta[name="twitter:image"]');
+                            if (ogImg && ogImg.content && !ogImg.content.includes('logo') && !ogImg.content.includes('icon')) {
+                                targetSrc = ogImg.content;
+                            }
+
+                            // Check WordPress / Theme DOM images
+                            if (!targetSrc) {
+                                const selectors = [
+                                    '.wp-post-image',
+                                    '.featured-image img',
+                                    '.post-thumbnail img',
+                                    'article img',
+                                    '.entry-content img',
+                                    'figure img'
+                                ];
+                                for (const s of selectors) {
+                                    const img = document.querySelector(s);
+                                    if (img) {
+                                        const src = img.currentSrc || img.src || img.getAttribute('data-src') || img.getAttribute('data-lazy-src');
+                                        if (src && !src.includes('logo') && !src.includes('avatar') && !src.startsWith('data:')) {
+                                            targetSrc = src;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+
+                            if (!targetSrc) return null;
+
+                            // Fetch image in browser context and return base64
+                            try {
+                                const response = await fetch(targetSrc);
+                                const blob = await response.blob();
+                                return new Promise((resolve) => {
+                                    const reader = new FileReader();
+                                    reader.onloadend = () => resolve(reader.result);
+                                    reader.onerror = () => resolve(null);
+                                    reader.readAsDataURL(blob);
+                                });
+                            } catch (e) {
+                                return null;
+                            }
+                        }""")
 
                         browser.close()
 
-                    if img_path and os.path.exists(img_path) and os.path.getsize(img_path) > 1000:
-                        st.info("✅ Original story image successfully captured.")
+                    # 3. Save the image if extracted
+                    if extracted_b64 and "base64," in extracted_b64:
+                        raw_data = extracted_b64.split("base64,")[1]
+                        img_path = os.path.join(tempfile.gettempdir(), f"extracted_{os.urandom(4).hex()}.jpg")
+                        with open(img_path, "wb") as f:
+                            f.write(base64.b64decode(raw_data))
+                        st.info("✅ Original story image successfully captured from website.")
                     else:
-                        st.warning("⚠️ Could not extract the original image element, using fallback.")
+                        st.warning("⚠️ Could not capture website image, using AI fallback.")
 
-                    # 3. Generate Card
+                    # 4. Generate Card
                     os.makedirs(OUTPUT_DIR, exist_ok=True)
                     default_base = f"url_card_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
                     final_filename = get_card_filename(default_base, url_custom_name)
