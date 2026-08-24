@@ -100,16 +100,31 @@ def img_to_base64(img_path):
     if not img_path or not isinstance(img_path, (str, bytes, os.PathLike)):
         return ""
 
-    real_path = resource_path(str(img_path))
+    # If it's already a full data URI, return as-is
+    str_path = str(img_path).strip()
+    if str_path.startswith("data:image"):
+        return str_path
+
+    real_path = resource_path(str_path)
     if not os.path.exists(real_path):
-        real_path = str(img_path)
+        real_path = str_path
 
     if os.path.exists(real_path):
         try:
             with open(real_path, "rb") as image_file:
-                encoded_string = base64.b64encode(image_file.read()).decode('utf-8')
+                raw_bytes = image_file.read()
+                if not raw_bytes:
+                    return ""
+                encoded_string = base64.b64encode(raw_bytes).decode('utf-8')
+                
+                # Detect MIME type
                 ext = str(real_path).split('.')[-1].lower()
-                mime = "image/png" if ext == "png" else "image/jpeg"
+                if ext in ["jpg", "jpeg"]:
+                    mime = "image/jpeg"
+                elif ext == "webp":
+                    mime = "image/webp"
+                else:
+                    mime = "image/png"
                 return f"data:{mime};base64,{encoded_string}"
         except Exception as e:
             print(f"Base64 Error ({real_path}): {e}")
@@ -188,9 +203,9 @@ def create_ummat_social_card(
     valid_news_img = None
     if news_img_path:
         clean_p = str(news_img_path).strip().strip("'").strip('"')
-        if os.path.exists(clean_p) and os.path.getsize(clean_p) > 500:
+        if os.path.exists(clean_p) and os.path.getsize(clean_p) > 200:
             valid_news_img = os.path.abspath(clean_p)
-        elif os.path.exists(resource_path(clean_p)) and os.path.getsize(resource_path(clean_p)) > 500:
+        elif os.path.exists(resource_path(clean_p)) and os.path.getsize(resource_path(clean_p)) > 200:
             valid_news_img = resource_path(clean_p)
 
     if not valid_news_img:
