@@ -188,15 +188,17 @@ def create_ummat_social_card(
     if not clean_headline:
         clean_headline = "یہاں خبر کی اردو سرخی آئے گی۔"
 
+    # Strict path check: verify file exists on disk
     valid_news_img = None
     if news_img_path:
         clean_p = str(news_img_path).strip().strip("'").strip('"')
-        if os.path.exists(clean_p):
+        if os.path.exists(clean_p) and os.path.getsize(clean_p) > 1000:
             valid_news_img = clean_p
         elif os.path.exists(resource_path(clean_p)):
             valid_news_img = resource_path(clean_p)
 
     if not valid_news_img:
+        print("⚠️ No valid image provided, generating AI background fallback...")
         news_img_path = fetch_ai_generated_image(clean_headline, output_path="temp_ai_bg.jpg", width=1080, height=1350)
     else:
         news_img_path = valid_news_img
