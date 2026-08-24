@@ -286,50 +286,126 @@ elif tab_choice == "🔗 Card from URL":
         if not url_input.strip():
             st.warning("Please enter story URL!")
         else:
-            with st.spinner("Fetching story and generating card..."):
+            with st.spinner("Fetching story and extracting featured image..."):
                 try:
-                    headers = {'User-Agent': 'Mozilla/5.0'}
-                    res = requests.get(url_input, headers=headers, timeout=12, verify=False)
+                    headers = {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+                        'Accept-Language': 'en-US,en;q=0.9,ur;q=0.8',
+                        'Referer': url_input
+                    }
+                    
+                    res = requests.get(url_input, headers=headers, timeout=15, verify=False)
                     res.encoding = 'utf-8'
                     soup = BeautifulSoup(res.text, 'html.parser')
 
-                    title_tag = soup.find('h1') or soup.find('h2') or soup.find('title')
-                    headline = title_tag.get_text().strip() if title_tag else "Important News"
+                    # 1. Extract Headline
+                    title_tag = (
+                        soup.find('h1') or 
+                        soup.find('meta', property='og:title') or 
+                        soup.find('h2', class_=re.compile(r'title|headline|post', re.I)) or
+                        soup.find('title')
+                    )
+                    
+                    if title_tag:
+                        headline = title_tag.get('content') if title_tag.name == 'meta' else title_tag.get_text().strip()
+                    else:
+                        headline = "اہم خبر"
+                    
+                    # Clean trailing sitenames (e.g., "- Daily Ummat", "| روزنامہ امت")
+                    headline = re.sub(r'\s*[-–|—]\s*(روزنامہ\s*امت|Ummat|Daily Ummat).*$', '', headline, flags=re.I).strip()
 
-                    meta_img = soup.find('meta', property='og:image') or soup.find('meta', attrs={'name': 'twitter:image'})
-                    img_url = meta_img['content'] if meta_img and meta_img.get('content') else None
+                    # 2. Comprehensive Image Extraction (Meta -> WordPress -> JSON-LD -> Lazy-load)
+                    img_url = None
+                    
+                    # (a) Meta OpenGraph & Twitter tags
+                    meta_img = (
+                        soup.find('meta', property='og:image:secure_url') or
+                        soup.find('meta', property='og:image') or 
+                        soup.find('meta', attrs={'name': 'twitter:image'}) or
+                        soup.find('meta', attrs={'name': 'twitter:image:src'}) or
+                        soup.find('link', rel='image_src')
+                    )
+                    if meta_img and (meta_img.get('content') or meta_img.get('href')):
+                        img_url = meta_img.get('content') or meta_img.get('href')
+
+                    # (b) WordPress Featured Image CSS Classes
                     if not img_url:
-                        img_tag = soup.find('img')
-                        if img_tag and img_tag.get('src'):
-                            img_url = img_tag['src']
+                        wp_img = (
+                            soup.find('img', class_=re.compile(r'wp-post-image|featured-img|attachment-post-thumbnail|post-thumb', re.I)) or
+                            soup.select_one('.featured-image img, .post-thumbnail img, .entry-content img, article img')
+                        )
+                        if wp_img:
+                            img_url = (
+                                wp_img.get('data-lazy-src') or 
+                                wp_img.get('data-src') or 
+                                wp_img.get('data-orig-file') or 
+                                wp_img.get('src')
+                            )
+                            if not img_url and wp_img.get('srcset'):
+                                # Pick the highest resolution link from srcset
+                                srcset_parts = wp_img['srcset'].split(',')
+                                img_url = srcset_parts[-1].strip().split(' ')[0]
 
+                    # (c) JSON-LD Schema fallback
+                    if not img_url:
+                        for script in soup.find_all('script', type='application/ld+json'):
+                            try:
+                                json_data = json.loads(script.string)
+                                if isinstance(json_data, dict):
+                                    if 'image' in json_data:
+                                        img_field = json_data['image']
+                                        img_url = img_field.get('url') if isinstance(img_field, dict) else (img_field[0] if isinstance(img_field, list) else img_field)
+                                        if img_url:
+                                            break
+                            except Exception:
+                                pass
+
+                    # 3. Download and Save Image
                     img_path = None
                     if img_url:
                         if not img_url.startswith('http'):
                             img_url = urllib.parse.urljoin(url_input, img_url)
-                        img_resp = requests.get(img_url, headers=headers, timeout=12, verify=False)
-                        if img_resp.status_code == 200:
-                            img_path = os.path.join(tempfile.gettempdir(), "fetched_url_img.jpg")
-                            with open(img_path, 'wb') as f:
-                                f.write(img_resp.content)
 
+                        # Exclude tracking pixels, small icons, and blank SVGs
+                        if not any(bad in img_url.lower() for bad in ['gravatar.com', 'logo', 'icon', 'blank.gif', 'spacer.gif', 'data:image']):
+                            img_headers = headers.copy()
+                            img_headers['Accept'] = 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8'
+                            
+                            img_resp = requests.get(img_url, headers=img_headers, timeout=15, verify=False)
+                            if img_resp.status_code == 200 and len(img_resp.content) > 3000:
+                                temp_ext = ".jpg"
+                                content_type = img_resp.headers.get('Content-Type', '')
+                                if 'png' in content_type:
+                                    temp_ext = ".png"
+                                elif 'webp' in content_type:
+                                    temp_ext = ".webp"
+
+                                img_path = os.path.join(tempfile.gettempdir(), f"fetched_url_{os.urandom(4).hex()}{temp_ext}")
+                                with open(img_path, 'wb') as f:
+                                    f.write(img_resp.content)
+
+                    # 4. Generate Card
                     os.makedirs(OUTPUT_DIR, exist_ok=True)
                     default_base = f"url_card_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
                     final_filename = get_card_filename(default_base, url_custom_name)
                     card_file = os.path.join(OUTPUT_DIR, final_filename)
 
                     generate_custom_card(
-                        headline_text=headline, news_img_path=img_path,
-                        template_path=TEMPLATE_PATH, output_path=card_file
+                        headline_text=headline, 
+                        news_img_path=img_path,
+                        template_path=TEMPLATE_PATH, 
+                        output_path=card_file
                     )
                     
                     if os.path.exists(card_file) and os.path.getsize(card_file) > 0:
-                        st.success("Social card generated successfully!")
+                        st.success("Social card generated successfully with the original story image!")
                         st.image(card_file, caption="Generated Card Preview")
                         with open(card_file, "rb") as cf:
                             st.download_button("📥 Download Card", cf.read(), file_name=final_filename, mime="image/png")
                     else:
                         st.error(f"Renderer failed to write card image at: {card_file}")
+                        
                 except Exception as e:
                     st.error(f"Card generation failed: {e}")
                     st.code(traceback.format_exc())
