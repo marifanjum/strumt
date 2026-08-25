@@ -74,45 +74,67 @@ def get_or_create_cipher() -> Fernet:
     return Fernet(key)
 
 
-def get_secret_val(key_name: str, default=""):
-    """Safely reads secrets from st.secrets without crashing on dict nesting."""
-    try:
-        if not hasattr(st, "secrets") or not st.secrets:
-            return default
-        
-        # Direct check
-        if key_name in st.secrets:
-            return st.secrets[key_name]
-        
-        # Check sub-tables (e.g. [auth], [keys])
-        for k in st.secrets.keys():
-            val = st.secrets[k]
-            if isinstance(val, dict) and key_name in val:
-                return val[key_name]
-    except Exception:
-        pass
+def get_secret_val(key_name: str, section: str = None, default=""):
+    """Safely retrieves keys matching flat or section-based TOML tables."""
+    if not hasattr(st, "secrets") or not st.secrets:
+        return default
+
+    # 1. Explicit section check (e.g. st.secrets["ai"]["gemini_key"])
+    if section and section in st.secrets:
+        try:
+            if key_name in st.secrets[section]:
+                val = st.secrets[section][key_name]
+                return val if val is not None else default
+        except Exception:
+            pass
+
+    # 2. Top-level root check
+    if key_name in st.secrets:
+        val = st.secrets[key_name]
+        if not isinstance(val, dict):
+            return val if val is not None else default
+
+    # 3. Recursive lookup fallback
+    for s_name in st.secrets.keys():
+        s_val = st.secrets[s_name]
+        if isinstance(s_val, dict) and key_name in s_val:
+            val = s_val[key_name]
+            return val if val is not None else default
+
     return default
 
 
 def load_master_config() -> dict:
+    raw_pwd = str(get_secret_val("password", section="auth", default="")).strip()
+    if not raw_pwd:
+        raw_pwd = str(get_secret_val("master_password", default="")).strip()
+    if not raw_pwd:
+        raw_pwd = "999999"
+
     default_config = {
-        "master_password": str(get_secret_val("master_password", get_secret_val("password", "999999"))),
-        "wp_url": str(get_secret_val("wp_url", "")),
-        "wp_user": str(get_secret_val("wp_user", "")),
-        "wp_pass": str(get_secret_val("wp_pass", "")),
-        "ai_provider": str(get_secret_val("ai_provider", "Groq (Llama)")),
-        "groq_key": str(get_secret_val("groq_key", "")),
-        "groq_model": str(get_secret_val("groq_model", "llama-3.3-70b-versatile")),
-        "gemini_key": str(get_secret_val("gemini_key", "")),
-        "gemini_model": str(get_secret_val("gemini_model", "gemini-2.5-flash")),
-        "openai_key": str(get_secret_val("openai_key", "")),
-        "openai_model": str(get_secret_val("openai_model", "gpt-4o")),
-        "output_dir": str(get_secret_val("output_dir", str(pathlib.Path.home() / "Downloads" / "NewsAppOutputs"))),
+        "master_password": raw_pwd,
+        
+        # [wordpress]
+        "wp_url": str(get_secret_val("wp_url", section="wordpress", default="")).strip(),
+        "wp_user": str(get_secret_val("wp_user", section="wordpress", default="")).strip(),
+        "wp_pass": str(get_secret_val("wp_pass", section="wordpress", default="")).strip(),
+        
+        # [ai]
+        "ai_provider": str(get_secret_val("provider", section="ai", default=get_secret_val("ai_provider", default="Groq (Llama)"))).strip(),
+        "groq_key": str(get_secret_val("groq_key", section="ai", default="")).strip(),
+        "groq_model": str(get_secret_val("groq_model", section="ai", default="groq/compound")).strip(),
+        "gemini_key": str(get_secret_val("gemini_key", section="ai", default="")).strip(),
+        "gemini_model": str(get_secret_val("gemini_model", section="ai", default="gemini-3.5-flash-lite")).strip(),
+        "openai_key": str(get_secret_val("openai_key", section="ai", default="")).strip(),
+        "openai_model": str(get_secret_val("openai_model", section="ai", default="gpt-4o-mini")).strip(),
+        
+        # Dimensions & Output
+        "output_dir": str(get_secret_val("output_dir", default=str(pathlib.Path.home() / "Downloads" / "NewsAppOutputs"))).strip(),
         "logo_path": "ummat bug final.png",
-        "resizer_width": int(get_secret_val("resizer_width", 1200)),
-        "resizer_height": int(get_secret_val("resizer_height", 720)),
-        "card_width": int(get_secret_val("card_width", 1080)),
-        "card_height": int(get_secret_val("card_height", 1350))
+        "resizer_width": int(get_secret_val("resizer_width", default=1200)),
+        "resizer_height": int(get_secret_val("resizer_height", default=720)),
+        "card_width": int(get_secret_val("card_width", default=1080)),
+        "card_height": int(get_secret_val("card_height", default=1350))
     }
 
     config_file = "config.encrypted"
@@ -124,7 +146,7 @@ def load_master_config() -> dict:
             decrypted_data = cipher.decrypt(encrypted_data)
             loaded_data = json.loads(decrypted_data.decode('utf-8'))
             for k, v in loaded_data.items():
-                if v:
+                if v and str(v).strip():
                     default_config[k] = v
         except Exception as e:
             print(f"Notice reading config.encrypted: {e}")
@@ -150,11 +172,11 @@ config = load_master_config()
 
 def get_api_credentials(provider_name: str):
     if provider_name == "Groq (Llama)":
-        return config.get("groq_key", "").strip(), config.get("groq_model", "llama-3.3-70b-versatile").strip()
+        return config.get("groq_key", "").strip(), config.get("groq_model", "groq/compound").strip()
     elif provider_name == "Google Gemini":
-        return config.get("gemini_key", "").strip(), config.get("gemini_model", "gemini-2.5-flash").strip()
+        return config.get("gemini_key", "").strip(), config.get("gemini_model", "gemini-3.5-flash-lite").strip()
     else:
-        return config.get("openai_key", "").strip(), config.get("openai_model", "gpt-4o").strip()
+        return config.get("openai_key", "").strip(), config.get("openai_model", "gpt-4o-mini").strip()
 
 
 def sanitize_seo_text(raw_text: str) -> str:
@@ -249,9 +271,38 @@ def create_news_card(
 
 
 # ---------------------------------------------------------
-# 2. MAIN NAVIGATION TABS
+# 2. FULL-APP AUTHENTICATION GATEKEEPER
 # ---------------------------------------------------------
-st.title("⚡ Direct Story Publisher & News Studio Pro")
+expected_app_password = str(config.get("master_password", "999999")).strip()
+
+if not st.session_state.get("authenticated", False):
+    st.markdown("## 🔒 Access Restricted")
+    st.markdown("Please authenticate to enter **Ummat News Studio & Publisher Pro**.")
+    
+    col_l1, col_l2 = st.columns([1, 1])
+    with col_l1:
+        login_pwd = st.text_input("Enter Passcode / Password:", type="password", key="login_pass_input")
+        if st.button("🔓 Sign In", type="primary", width="stretch"):
+            if login_pwd.strip() == expected_app_password:
+                st.session_state["authenticated"] = True
+                st.session_state["master_unlocked"] = True
+                st.rerun()
+            else:
+                st.error("❌ Invalid Passcode. Check your secrets.toml [auth] credentials.")
+    st.stop()
+
+
+# ---------------------------------------------------------
+# 3. MAIN NAVIGATION TABS
+# ---------------------------------------------------------
+header_col1, header_col2 = st.columns([4, 1])
+with header_col1:
+    st.title("⚡ Direct Story Publisher & News Studio Pro")
+with header_col2:
+    if st.button("🔒 Sign Out", width="stretch"):
+        st.session_state["authenticated"] = False
+        st.session_state["master_unlocked"] = False
+        st.rerun()
 
 tab_pub, tab_resizer, tab_ai, tab_social, tab_url, tab_settings = st.tabs([
     "📝 Direct Story Publisher",
@@ -642,87 +693,70 @@ with tab_url:
 with tab_settings:
     st.markdown("### ⚙️ Master Branding & System Configuration")
 
-    expected_pwd = str(config.get("master_password", "999999"))
+    with st.form("settings_form"):
+        st.markdown("#### 📁 Directories & Dimensions")
+        out_dir_val = st.text_input("Output Directory:", value=config.get("output_dir", ""))
+        
+        d_c1, d_c2 = st.columns(2)
+        with d_c1:
+            r_w = st.number_input("Resizer Canvas Width:", value=int(config.get("resizer_width", 1200)))
+            r_h = st.number_input("Resizer Canvas Height:", value=int(config.get("resizer_height", 720)))
+        with d_c2:
+            c_w = st.number_input("Social Card Width:", value=int(config.get("card_width", 1080)))
+            c_h = st.number_input("Social Card Height:", value=int(config.get("card_height", 1350)))
 
-    if not st.session_state.get("master_unlocked", False):
-        pwd = st.text_input("Enter Master Password to Unlock Settings:", type="password")
-        if st.button("🔓 Unlock Settings"):
-            if pwd == expected_pwd:
-                st.session_state["master_unlocked"] = True
+        st.markdown("#### 🔑 WordPress API Credentials")
+        wp_url_val = st.text_input("WordPress URL:", value=config.get("wp_url", ""))
+        wp_u1, wp_u2 = st.columns(2)
+        with wp_u1:
+            wp_user_val = st.text_input("WordPress Username:", value=config.get("wp_user", ""))
+        with wp_u2:
+            wp_pass_val = st.text_input("Application Password:", value=config.get("wp_pass", ""), type="password")
+
+        st.markdown("#### 🤖 AI Platform API Keys & Models")
+        
+        groq_c1, groq_c2 = st.columns(2)
+        with groq_c1:
+            groq_k = st.text_input("Groq API Key:", value=config.get("groq_key", ""), type="password")
+        with groq_c2:
+            groq_m = st.text_input("Groq Model ID:", value=config.get("groq_model", "groq/compound"))
+
+        gem_c1, gem_c2 = st.columns(2)
+        with gem_c1:
+            gem_k = st.text_input("Gemini API Key:", value=config.get("gemini_key", ""), type="password")
+        with gem_c2:
+            gem_m = st.text_input("Gemini Model ID:", value=config.get("gemini_model", "gemini-3.5-flash-lite"))
+
+        oa_c1, oa_c2 = st.columns(2)
+        with oa_c1:
+            oa_k = st.text_input("OpenAI API Key:", value=config.get("openai_key", ""), type="password")
+        with oa_c2:
+            oa_m = st.text_input("OpenAI Model ID:", value=config.get("openai_model", "gpt-4o-mini"))
+
+        save_btn = st.form_submit_button("💾 Save All Settings Encrypted", type="primary")
+
+        if save_btn:
+            new_config = {
+                "master_password": expected_app_password,
+                "wp_url": wp_url_val.strip(),
+                "wp_user": wp_user_val.strip(),
+                "wp_pass": wp_pass_val.strip(),
+                "ai_provider": config.get("ai_provider", "Groq (Llama)"),
+                "groq_key": groq_k.strip(),
+                "groq_model": groq_m.strip(),
+                "gemini_key": gem_k.strip(),
+                "gemini_model": gem_m.strip(),
+                "openai_key": oa_k.strip(),
+                "openai_model": oa_m.strip(),
+                "output_dir": out_dir_val.strip(),
+                "logo_path": config.get("logo_path", "ummat bug final.png"),
+                "resizer_width": int(r_w),
+                "resizer_height": int(r_h),
+                "card_width": int(c_w),
+                "card_height": int(c_h)
+            }
+            if save_master_config(new_config):
+                st.success("✅ Configuration saved securely!")
                 st.rerun()
             else:
-                st.error("❌ Incorrect Password!")
-    else:
-        st.success("🔒 Master Control Unlocked")
-
-        with st.form("settings_form"):
-            st.markdown("#### 📁 Directories & Dimensions")
-            out_dir_val = st.text_input("Output Directory:", value=config.get("output_dir", ""))
-            
-            d_c1, d_c2 = st.columns(2)
-            with d_c1:
-                r_w = st.number_input("Resizer Canvas Width:", value=int(config.get("resizer_width", 1200)))
-                r_h = st.number_input("Resizer Canvas Height:", value=int(config.get("resizer_height", 720)))
-            with d_c2:
-                c_w = st.number_input("Social Card Width:", value=int(config.get("card_width", 1080)))
-                c_h = st.number_input("Social Card Height:", value=int(config.get("card_height", 1350)))
-
-            st.markdown("#### 🔑 WordPress API Credentials")
-            wp_url_val = st.text_input("WordPress URL:", value=config.get("wp_url", ""))
-            wp_u1, wp_u2 = st.columns(2)
-            with wp_u1:
-                wp_user_val = st.text_input("WordPress Username:", value=config.get("wp_user", ""))
-            with wp_u2:
-                wp_pass_val = st.text_input("Application Password:", value=config.get("wp_pass", ""), type="password")
-
-            st.markdown("#### 🤖 AI Platform API Keys & Models")
-            
-            groq_c1, groq_c2 = st.columns(2)
-            with groq_c1:
-                groq_k = st.text_input("Groq API Key:", value=config.get("groq_key", ""), type="password")
-            with groq_c2:
-                groq_m = st.text_input("Groq Model ID:", value=config.get("groq_model", "llama-3.3-70b-versatile"))
-
-            gem_c1, gem_c2 = st.columns(2)
-            with gem_c1:
-                gem_k = st.text_input("Gemini API Key:", value=config.get("gemini_key", ""), type="password")
-            with gem_c2:
-                gem_m = st.text_input("Gemini Model ID:", value=config.get("gemini_model", "gemini-2.5-flash"))
-
-            oa_c1, oa_c2 = st.columns(2)
-            with oa_c1:
-                oa_k = st.text_input("OpenAI API Key:", value=config.get("openai_key", ""), type="password")
-            with oa_c2:
-                oa_m = st.text_input("OpenAI Model ID:", value=config.get("openai_model", "gpt-4o"))
-
-            save_btn = st.form_submit_button("💾 Save All Settings Encrypted", type="primary")
-
-            if save_btn:
-                new_config = {
-                    "master_password": expected_pwd,
-                    "wp_url": wp_url_val.strip(),
-                    "wp_user": wp_user_val.strip(),
-                    "wp_pass": wp_pass_val.strip(),
-                    "ai_provider": config.get("ai_provider", "Groq (Llama)"),
-                    "groq_key": groq_k.strip(),
-                    "groq_model": groq_m.strip(),
-                    "gemini_key": gem_k.strip(),
-                    "gemini_model": gem_m.strip(),
-                    "openai_key": oa_k.strip(),
-                    "openai_model": oa_m.strip(),
-                    "output_dir": out_dir_val.strip(),
-                    "logo_path": config.get("logo_path", "ummat bug final.png"),
-                    "resizer_width": int(r_w),
-                    "resizer_height": int(r_h),
-                    "card_width": int(c_w),
-                    "card_height": int(c_h)
-                }
-                if save_master_config(new_config):
-                    st.success("✅ Configuration saved securely!")
-                    st.rerun()
-                else:
-                    st.error("❌ Error saving encrypted configuration.")
-
-        if st.button("🔒 Re-Lock Settings Panel"):
-            st.session_state["master_unlocked"] = False
-            st.rerun()
+                st.error("❌ Error saving encrypted configuration.")
