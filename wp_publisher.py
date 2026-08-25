@@ -1,695 +1,297 @@
 import os
 import io
-import re
 import json
-import tempfile
-import pathlib
+import base64
 import urllib.parse
-from datetime import datetime
-import sys
-import subprocess
-import streamlit as st
-
-# ---------------------------------------------------------
-# 1. PAGE SETUP (MUST BE FIRST STREAMLIT CALL)
-# ---------------------------------------------------------
-st.set_page_config(
-    page_title="Ummat News Studio & Publisher Pro",
-    page_icon="⚡",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
-
+import re
 import requests
-import markdown
+import urllib3
 from bs4 import BeautifulSoup
-from cryptography.fernet import Fernet
-from PIL import Image, ImageDraw, ImageFont, ImageOps
-import arabic_reshaper
-from bidi.algorithm import get_display
 
-# Core Modules
-from wp_publisher import post_to_wordpress, get_media_id_from_url, fetch_wordpress_categories
-from image_designer import generate_custom_card
-from ai_news_generator import generate_ai_news
-from social_manager_tab import render_social_manager_tab
-from image_resizer_tab import render_image_resizer_tab
+# Suppress unverified HTTPS warnings
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
-@st.cache_resource
-def ensure_playwright_installed():
-    try:
-        subprocess.run(
-            [sys.executable, "-m", "playwright", "install", "chromium"],
-            check=True
-        )
-    except Exception as e:
-        print(f"Playwright installation note: {e}")
-
-ensure_playwright_installed()
-
-# RTL Urdu Nastaliq CSS Injection
-st.markdown("""
-    <style>
-        .urdu-text, textarea[aria-label*="Urdu"], textarea[aria-label*="Story Text"], textarea[aria-label*="Headline"], input[aria-label*="Card Headline"] {
-            font-family: 'Jameel Noori Nastaleeq', 'Jameel Custom', 'Noto Nastaliq Urdu', Arial, sans-serif !important;
-            direction: rtl !important;
-            text-align: right !important;
-            font-size: 19px !important;
-            line-height: 1.8 !important;
-        }
-    </style>
-""", unsafe_allow_html=True)
+def get_headers(wp_user: str, wp_pass: str) -> dict:
+    """Generates standard HTTP Basic Authentication header."""
+    credentials = f"{wp_user}:{wp_pass}"
+    encoded = base64.b64encode(credentials.encode('utf-8')).decode('utf-8')
+    return {'Authorization': f'Basic {encoded}'}
 
 
-def get_or_create_cipher() -> Fernet:
-    key_file = "secret.key"
-    if os.path.exists(key_file):
-        with open(key_file, "rb") as kf:
-            key = kf.read()
-    else:
-        key = Fernet.generate_key()
-        with open(key_file, "wb") as kf:
-            kf.write(key)
-    return Fernet(key)
+def format_wp_urls(base_url: str):
+    """Normalizes WordPress root URL and derives standard REST API endpoints."""
+    clean_url = base_url.replace("/xmlrpc.php", "").strip().rstrip("/")
+    if not clean_url.startswith("http"):
+        clean_url = "https://" + clean_url
+    posts_url = f"{clean_url}/wp-json/wp/v2/posts"
+    media_url = f"{clean_url}/wp-json/wp/v2/media"
+    return clean_url, posts_url, media_url
 
 
-def get_secret_val(key_name: str, section: str = None, default=""):
-    if not hasattr(st, "secrets") or not st.secrets:
-        return default
+def get_media_id_from_url(
+    image_source,
+    wp_url: str,
+    wp_user: str,
+    wp_pass: str,
+    title_text: str = "",
+    caption_text: str = ""
+) -> int:
+    """
+    1. Checks if the image is already in the site's WP Media Library (deduplication).
+    2. Supports direct local files from disk or Streamlit UploadedFile/BytesIO.
+    3. Supports external URLs via deep DOM scraping (og:image, twitter:image, lazy-load attributes).
+    4. Uploads binary data and updates WordPress Title, Caption, Alt Text, and Description.
+    """
+    if not image_source or not wp_url or not wp_user or not wp_pass:
+        return None
 
-    if section and section in st.secrets:
+    clean_base_url, _, media_url = format_wp_urls(wp_url)
+    headers = get_headers(wp_user, wp_pass)
+    
+    # Handle string sources (URLs / Local paths)
+    is_str_source = isinstance(image_source, str)
+    clean_source = str(image_source).strip().strip("'").strip('"') if is_str_source else ""
+
+    # Normalize domain checking (ignore protocols and www)
+    def normalize_domain(u):
+        parsed = urllib.parse.urlparse(u if u.startswith("http") else f"https://{u}")
+        return parsed.netloc.lower().replace("www.", "")
+
+    target_domain = normalize_domain(clean_base_url)
+
+    # =========================================================================
+    # STEP 1: CHECK IF IMAGE ALREADY EXISTS IN OWN SITE MEDIA LIBRARY
+    # =========================================================================
+    if is_str_source and clean_source.startswith("http") and (target_domain in normalize_domain(clean_source) or "/wp-content/uploads/" in clean_source):
         try:
-            if key_name in st.secrets[section]:
-                val = st.secrets[section][key_name]
-                return val if val is not None else default
-        except Exception:
-            pass
+            parsed_url = urllib.parse.urlparse(clean_source)
+            full_filename = os.path.basename(parsed_url.path)
+            base_name, _ = os.path.splitext(full_filename)
+            core_name = re.sub(r'-\d+x\d+$', '', base_name).lower()
+            print(f"🔍 Searching WP Library for existing file: '{full_filename}' (Core: '{core_name}')")
 
-    if key_name in st.secrets:
-        val = st.secrets[key_name]
-        if not isinstance(val, dict):
-            return val if val is not None else default
+            search_url = f"{media_url}?search={urllib.parse.quote(core_name)}&per_page=20"
+            res = requests.get(search_url, headers=headers, timeout=15, verify=False)
 
-    for s_name in st.secrets.keys():
-        s_val = st.secrets[s_name]
-        if isinstance(s_val, dict) and key_name in s_val:
-            val = s_val[key_name]
-            return val if val is not None else default
+            if res.status_code == 200:
+                media_items = res.json()
+                for item in media_items:
+                    stored_url = item.get('source_url', '')
+                    guid_url = item.get('guid', {}).get('rendered', '')
+                    item_slug = item.get('slug', '')
 
-    return default
+                    if (full_filename.lower() in stored_url.lower() or 
+                        full_filename.lower() in guid_url.lower() or 
+                        core_name == item_slug.lower() or 
+                        core_name in stored_url.lower()):
+                        existing_id = item.get('id')
+                        print(f"✅ Found existing media in library! ID: {existing_id}")
+                        return int(existing_id)
+        except Exception as e:
+            print(f"⚠️ Library search notice: {e}")
+
+    # =========================================================================
+    # STEP 2: EXTRACT FILE BYTES (STREAMLIT OBJECT, LOCAL FILE, OR WEB SCRAPE)
+    # =========================================================================
+    try:
+        file_bytes = None
+        filename = "story_image.jpg"
+        browser_headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8'
+        }
+
+        # Branch A: Streamlit UploadedFile or BytesIO buffer
+        if hasattr(image_source, "getvalue"):
+            file_bytes = image_source.getvalue()
+            filename = getattr(image_source, "name", filename)
+            print(f"📦 Extracted binary from in-memory upload stream: {filename}")
+
+        # Branch B: Raw bytes
+        elif isinstance(image_source, bytes):
+            file_bytes = image_source
+
+        # Branch C: Local file on disk (from Image Resizer Tab)
+        elif is_str_source and os.path.exists(clean_source) and os.path.isfile(clean_source):
+            filename = os.path.basename(clean_source)
+            print(f"📁 Reading local image binary: {clean_source}")
+            with open(clean_source, "rb") as f:
+                file_bytes = f.read()
+
+        # Branch D: Web URL extraction
+        elif is_str_source and clean_source.startswith("http"):
+            target_img_url = clean_source
+            if not target_img_url.lower().split('?')[0].endswith(('png', 'jpg', 'jpeg', 'webp', 'gif')):
+                page_res = requests.get(target_img_url, headers={'User-Agent': browser_headers['User-Agent']}, timeout=15, verify=False)
+                soup = BeautifulSoup(page_res.text, 'html.parser')
+
+                meta_img = (
+                    soup.find('meta', property='og:image:secure_url') or 
+                    soup.find('meta', property='og:image') or 
+                    soup.find('meta', attrs={'name': 'twitter:image'})
+                )
+                if meta_img and meta_img.get('content'):
+                    target_img_url = meta_img['content']
+                else:
+                    img_tag = soup.select_one('.wp-post-image, .featured-image img, article img, .post-thumbnail img, .entry-content img, img')
+                    if img_tag:
+                        target_img_url = img_tag.get('data-orig-file') or img_tag.get('data-src') or img_tag.get('src')
+
+                if target_img_url and not target_img_url.startswith('http'):
+                    target_img_url = urllib.parse.urljoin(clean_source, target_img_url)
+
+            if target_img_url:
+                img_resp = requests.get(target_img_url, headers=browser_headers, timeout=20, verify=False)
+                if img_resp.status_code == 200 and len(img_resp.content) > 300:
+                    file_bytes = img_resp.content
+                    raw_name = target_img_url.split('/')[-1].split('?')[0]
+                    filename = raw_name if '.' in raw_name else f"news_{os.urandom(3).hex()}.jpg"
+
+        # =========================================================================
+        # STEP 3: UPLOAD TO WORDPRESS MEDIA ENDPOINT
+        # =========================================================================
+        if file_bytes and len(file_bytes) > 300:
+            ext = filename.split('.')[-1].lower()
+            if ext == "png":
+                mime_type = "image/png"
+            elif ext == "webp":
+                mime_type = "image/webp"
+            elif ext == "gif":
+                mime_type = "image/gif"
+            else:
+                mime_type = "image/jpeg"
+                if ext not in ["jpg", "jpeg"]:
+                    filename = f"{filename.rsplit('.', 1)[0]}.jpg"
+
+            safe_filename = re.sub(r'[^a-zA-Z0-9._-]', '_', filename)
+
+            upload_headers = headers.copy()
+            upload_headers['Content-Type'] = mime_type
+            upload_headers['Content-Disposition'] = f'attachment; filename="{safe_filename}"'
+
+            upload_res = requests.post(media_url, data=file_bytes, headers=upload_headers, timeout=35, verify=False)
+
+            if upload_res.status_code in [200, 201]:
+                media_data = upload_res.json()
+                new_id = media_data.get('id')
+                print(f"✅ Successfully Uploaded Media ID: {new_id} ({safe_filename})")
+
+                # =====================================================================
+                # STEP 4: SET COMPLETE WORDPRESS MEDIA METADATA
+                # =====================================================================
+                meta_label = caption_text.strip() if caption_text else (title_text.strip() or safe_filename.rsplit('.', 1)[0])
+                update_payload = {
+                    "title": meta_label,
+                    "caption": meta_label,
+                    "alt_text": meta_label,
+                    "description": meta_label
+                }
+
+                update_headers = headers.copy()
+                update_headers['Content-Type'] = 'application/json; charset=utf-8'
+                requests.post(
+                    f"{media_url}/{new_id}",
+                    data=json.dumps(update_payload, ensure_ascii=False).encode('utf-8'),
+                    headers=update_headers,
+                    timeout=15,
+                    verify=False
+                )
+
+                return int(new_id)
+            else:
+                print(f"❌ WP Media Upload Error [{upload_res.status_code}]: {upload_res.text}")
+
+    except Exception as e:
+        print(f"❌ Error handling media upload: {e}")
+
+    return None
+
+upload_media_to_wordpress = get_media_id_from_url
 
 
-def load_master_config() -> dict:
-    raw_pwd = str(get_secret_val("password", section="auth", default="")).strip()
-    if not raw_pwd:
-        raw_pwd = str(get_secret_val("master_password", default="")).strip()
-    if not raw_pwd:
-        raw_pwd = "999999"
+def fetch_wordpress_categories(wp_url: str, wp_user: str, wp_pass: str) -> dict:
+    """Fetches WordPress category map {name: id}."""
+    if not wp_url or not wp_user or not wp_pass:
+        return {}
 
-    default_config = {
-        "master_password": raw_pwd,
-        "wp_url": str(get_secret_val("wp_url", section="wordpress", default="")).strip(),
-        "wp_user": str(get_secret_val("wp_user", section="wordpress", default="")).strip(),
-        "wp_pass": str(get_secret_val("wp_pass", section="wordpress", default="")).strip(),
-        "ai_provider": str(get_secret_val("provider", section="ai", default=get_secret_val("ai_provider", default="Groq (Llama)"))).strip(),
-        "groq_key": str(get_secret_val("groq_key", section="ai", default="")).strip(),
-        "groq_model": str(get_secret_val("groq_model", section="ai", default="groq/compound")).strip(),
-        "gemini_key": str(get_secret_val("gemini_key", section="ai", default="")).strip(),
-        "gemini_model": str(get_secret_val("gemini_model", section="ai", default="gemini-3.5-flash-lite")).strip(),
-        "openai_key": str(get_secret_val("openai_key", section="ai", default="")).strip(),
-        "openai_model": str(get_secret_val("openai_model", section="ai", default="gpt-4o-mini")).strip(),
-        "output_dir": str(get_secret_val("output_dir", default=str(pathlib.Path.home() / "Downloads" / "NewsAppOutputs"))).strip(),
-        "logo_path": "ummat bug final.png",
-        "resizer_width": int(get_secret_val("resizer_width", default=1200)),
-        "resizer_height": int(get_secret_val("resizer_height", default=720)),
-        "card_width": int(get_secret_val("card_width", default=1080)),
-        "card_height": int(get_secret_val("card_height", default=1350))
+    clean_base_url, _, _ = format_wp_urls(wp_url)
+    cat_url = f"{clean_base_url}/wp-json/wp/v2/categories?per_page=100"
+
+    try:
+        headers = get_headers(wp_user, wp_pass)
+        res = requests.get(cat_url, headers=headers, timeout=10, verify=False)
+        if res.status_code == 200:
+            categories = res.json()
+            return {cat['name']: int(cat['id']) for cat in categories if 'name' in cat and 'id' in cat}
+    except Exception as e:
+        print(f"⚠️ Error fetching categories: {e}")
+
+    return {}
+
+
+def post_to_wordpress(
+    title: str,
+    content: str,
+    wp_url: str,
+    wp_user: str,
+    wp_pass: str,
+    excerpt: str = "",
+    media_id: int = None,
+    status: str = "draft",
+    category_ids: list = None
+) -> str:
+    """Publishes or saves a WordPress post and attaches featured media."""
+    if not wp_url or not wp_user or not wp_pass:
+        raise ValueError("Missing WordPress credentials.")
+
+    clean_base_url, posts_url, media_url = format_wp_urls(wp_url)
+    headers = get_headers(wp_user, wp_pass)
+    headers['Content-Type'] = 'application/json; charset=utf-8'
+
+    payload = {
+        "title": title,
+        "content": content,
+        "excerpt": excerpt,
+        "status": status,
     }
 
-    config_file = "config.encrypted"
-    if os.path.exists(config_file):
+    if media_id:
         try:
-            cipher = get_or_create_cipher()
-            with open(config_file, "rb") as f:
-                encrypted_data = f.read()
-            decrypted_data = cipher.decrypt(encrypted_data)
-            loaded_data = json.loads(decrypted_data.decode('utf-8'))
-            for k, v in loaded_data.items():
-                if v and str(v).strip():
-                    default_config[k] = v
+            payload["featured_media"] = int(media_id)
+            payload["meta"] = {"_thumbnail_id": int(media_id)}
+            print(f"🖼️ Setting Featured Thumbnail ID for post: {int(media_id)}")
         except Exception as e:
-            print(f"Notice reading config.encrypted: {e}")
+            print(f"⚠️ Error setting featured_media in payload: {e}")
 
-    return default_config
+    if category_ids:
+        payload["categories"] = [int(cat_id) for cat_id in category_ids]
 
-
-def save_master_config(config_dict: dict) -> bool:
     try:
-        cipher = get_or_create_cipher()
-        json_bytes = json.dumps(config_dict, indent=4).encode('utf-8')
-        encrypted_bytes = cipher.encrypt(json_bytes)
-        with open("config.encrypted", "wb") as f:
-            f.write(encrypted_bytes)
-        return True
-    except Exception as e:
-        print(f"Config saving error: {e}")
-        return False
+        json_data = json.dumps(payload, ensure_ascii=False).encode('utf-8')
+        response = requests.post(posts_url, data=json_data, headers=headers, timeout=30, verify=False)
+        if response.status_code in [200, 201]:
+            post_data = response.json()
+            post_id = post_data.get("id")
+            post_link = post_data.get("link")
 
-
-config = load_master_config()
-
-
-def get_api_credentials(provider_name: str):
-    if provider_name == "Groq (Llama)":
-        return config.get("groq_key", "").strip(), config.get("groq_model", "groq/compound").strip()
-    elif provider_name == "Google Gemini":
-        return config.get("gemini_key", "").strip(), config.get("gemini_model", "gemini-3.5-flash-lite").strip()
-    else:
-        return config.get("openai_key", "").strip(), config.get("openai_model", "gpt-4o-mini").strip()
-
-
-def sanitize_seo_text(raw_text: str) -> str:
-    cleaned = raw_text.strip()
-    cleaned = re.sub(
-        r'^(Description|SEO Description|Summary|Short Description|Hashtags|Tags|SEO|Keywords)\s*:\s*', 
-        '', 
-        cleaned, 
-        flags=re.IGNORECASE | re.MULTILINE
-    )
-    cleaned = re.sub(
-        r'(\n\s*)(Description|SEO Description|Summary|Short Description|Hashtags|Tags|SEO|Keywords)\s*:\s*', 
-        r'\1', 
-        cleaned, 
-        flags=re.IGNORECASE
-    )
-    cleaned = re.sub(r'[*_`]', '', cleaned)
-    cleaned = re.sub(r'^\s*#{1,6}\s+', '', cleaned, flags=re.MULTILINE)
-    return cleaned.strip()
-
-
-# ---------------------------------------------------------
-# 2. FULL-APP AUTHENTICATION GATEKEEPER
-# ---------------------------------------------------------
-expected_app_password = str(config.get("master_password", "999999")).strip()
-
-if not st.session_state.get("authenticated", False):
-    st.markdown("## 🔒 Access Restricted")
-    st.markdown("Please authenticate to enter **Ummat News Studio & Publisher Pro**.")
-    
-    col_l1, col_l2 = st.columns([1, 1])
-    with col_l1:
-        login_pwd = st.text_input("Enter Passcode / Password:", type="password", key="login_pass_input")
-        if st.button("🔓 Sign In", type="primary", width="stretch"):
-            if login_pwd.strip() == expected_app_password:
-                st.session_state["authenticated"] = True
-                st.session_state["master_unlocked"] = True
-                st.rerun()
-            else:
-                st.error("❌ Invalid Passcode. Check your secrets.toml [auth] credentials.")
-    st.stop()
-
-
-# ---------------------------------------------------------
-# 3. MAIN NAVIGATION TABS
-# ---------------------------------------------------------
-header_col1, header_col2 = st.columns([4, 1])
-with header_col1:
-    st.title("⚡ Direct Story Publisher & News Studio Pro")
-with header_col2:
-    if st.button("🔒 Sign Out", width="stretch"):
-        st.session_state["authenticated"] = False
-        st.session_state["master_unlocked"] = False
-        st.rerun()
-
-tab_pub, tab_resizer, tab_ai, tab_social, tab_url, tab_settings = st.tabs([
-    "📝 Direct Story Publisher",
-    "🖼️ Image Resizer & Collage",
-    "🤖 AI News Studio",
-    "🌐 Social Media Manager",
-    "🔗 Card from URL",
-    "⚙️ Branding Settings"
-])
-
-
-# =========================================================
-# TAB 1: DIRECT STORY PUBLISHER
-# =========================================================
-with tab_pub:
-    st.markdown("### 📝 Direct WordPress Story Publisher")
-
-    story_input_val = st.session_state.get("pub_story_text", "")
-    story_text = st.text_area(
-        "Paste complete story text (Line 1: Title, Line 2: Excerpt, Rest: Content/Markdown):",
-        value=story_input_val,
-        height=140,
-        placeholder="سرخی (Line 1)\nخلاصہ (Line 2)\nمکمل تفصیلات و متن (Line 3 onwards)..."
-    )
-
-    lines_preview = [l.strip() for l in story_text.splitlines() if l.strip()]
-    extracted_title = lines_preview[0] if lines_preview else ""
-
-    st.markdown("#### 🖼️ Thumbnail Source")
-    
-    # Check for in-memory bytes or disk path transferred from Resizer
-    transferred_bytes = st.session_state.get("story_img_bytes", None)
-    transferred_path = st.session_state.get("story_img_path", None)
-    transferred_name = st.session_state.get("story_img_name", "resizer_image.webp")
-
-    active_transferred_img = None
-    if transferred_bytes:
-        active_transferred_img = transferred_bytes
-    elif transferred_path and os.path.exists(transferred_path):
-        active_transferred_img = transferred_path
-
-    if active_transferred_img:
-        info_c1, info_c2 = st.columns([3, 1])
-        with info_c1:
-            st.success(f"✅ Active Image Linked from Studio: `{transferred_name}`")
-        with info_c2:
-            if st.button("❌ Remove Active Thumbnail", width="stretch"):
-                if "story_img_bytes" in st.session_state:
-                    del st.session_state["story_img_bytes"]
-                if "story_img_path" in st.session_state:
-                    del st.session_state["story_img_path"]
-                if "story_img_name" in st.session_state:
-                    del st.session_state["story_img_name"]
-                if "pub_card_custom_prefix" in st.session_state:
-                    del st.session_state["pub_card_custom_prefix"]
-                st.rerun()
-                
-        st.image(active_transferred_img, caption=f"Selected Thumbnail: {transferred_name}", width=320)
-
-    thumb_col1, thumb_col2 = st.columns([1, 1])
-    with thumb_col1:
-        pub_local_img = st.file_uploader("Or Upload Local File:", type=["png", "jpg", "jpeg", "webp"], key="pub_file_up")
-    with thumb_col2:
-        pub_thumb_url = st.text_input("Or Paste Image / Web Story URL:", placeholder="https://example.com/photo.jpg or article URL", key="pub_url_input")
-
-    caption_text = st.text_input("Image Caption (تصویر کا کیپشن):", placeholder="تصویر کا عنوان یا کیپشن...", key="pub_caption_input")
-
-    st.markdown("#### 📂 Taxonomy & Configuration")
-    tax_c1, tax_c2, tax_c3 = st.columns([2, 1, 1.5])
-
-    with tax_c1:
-        cats_map = fetch_wordpress_categories(config.get("wp_url", ""), config.get("wp_user", ""), config.get("wp_pass", ""))
-        cat_names = list(cats_map.keys()) if cats_map else ["Standard News"]
-        selected_category = st.selectbox("WordPress Category:", cat_names, key="pub_cat_select")
-
-    with tax_c2:
-        pub_status = st.selectbox("Post Status:", ["draft", "publish"], key="pub_status_select")
-
-    with tax_c3:
-        current_ai = config.get("ai_provider", "Groq (Llama)")
-        provider_options = ["Groq (Llama)", "Google Gemini", "OpenAI (GPT)"]
-        default_index = provider_options.index(current_ai) if current_ai in provider_options else 0
-        pub_ai_provider = st.selectbox("SEO AI Engine:", provider_options, index=default_index, key="pub_ai_select")
-
-    preset_pub_pfx = st.session_state.get("pub_card_custom_prefix", "")
-    pub_card_prefix = st.text_input("Custom Card Filename Prefix (Optional):", value=preset_pub_pfx, placeholder="e.g. breaking_news", key="pub_card_pfx_input")
-
-    st.markdown("---")
-    act_c1, act_c2, act_c3, act_c4 = st.columns(4)
-
-    run_post = False
-    run_card = False
-    run_seo = False
-
-    with act_c1:
-        if st.button("🧹 Clear All Fields", width="stretch"):
-            st.session_state["pub_story_text"] = ""
-            if "story_img_bytes" in st.session_state:
-                del st.session_state["story_img_bytes"]
-            if "story_img_path" in st.session_state:
-                del st.session_state["story_img_path"]
-            if "story_img_name" in st.session_state:
-                del st.session_state["story_img_name"]
-            if "pub_card_custom_prefix" in st.session_state:
-                del st.session_state["pub_card_custom_prefix"]
-            st.session_state["pub_seo_preview"] = ""
-            st.rerun()
-
-    with act_c2:
-        if st.button("🚀 Post Only", width="stretch"):
-            run_post = True
-
-    with act_c3:
-        if st.button("⚡ Post + Card", type="primary", width="stretch"):
-            run_post = True
-            run_card = True
-
-    with act_c4:
-        if st.button("🌐 Post + Card + SEO", width="stretch"):
-            run_post = True
-            run_card = True
-            run_seo = True
-
-    if run_post:
-        if not story_text.strip():
-            st.error("❌ Please paste story text first.")
-        else:
-            lines = [l.strip() for l in story_text.splitlines() if l.strip()]
-            if len(lines) < 2:
-                st.error("❌ Story text must have at least 2 lines (Line 1: Title, Line 2: Excerpt).")
-            else:
-                title = lines[0]
-                excerpt = lines[1]
-                raw_content = "\n\n".join(lines[2:]) if len(lines) > 2 else excerpt
-                html_content = markdown.markdown(raw_content)
-
-                # Prioritize: In-Memory Bytes -> File Path -> Local Upload -> Web URL
-                image_source = None
-                if transferred_bytes:
-                    image_source = io.BytesIO(transferred_bytes)
-                    setattr(image_source, "name", transferred_name)
-                elif transferred_path and os.path.exists(transferred_path):
-                    image_source = transferred_path
-                elif pub_local_img is not None:
-                    image_source = pub_local_img
-                elif pub_thumb_url.strip():
-                    image_source = pub_thumb_url.strip()
-
-                cat_ids = [cats_map[selected_category]] if (cats_map and selected_category in cats_map) else []
-
-                with st.spinner("🚀 Uploading media and publishing to WordPress..."):
-                    media_id = None
-                    if image_source:
-                        media_id = get_media_id_from_url(
-                            image_source=image_source,
-                            wp_url=config.get("wp_url", ""),
-                            wp_user=config.get("wp_user", ""),
-                            wp_pass=config.get("wp_pass", ""),
-                            title_text=title,
-                            caption_text=caption_text
-                        )
-
-                    post_link = post_to_wordpress(
-                        title=title,
-                        content=html_content,
-                        wp_url=config.get("wp_url", ""),
-                        wp_user=config.get("wp_user", ""),
-                        wp_pass=config.get("wp_pass", ""),
-                        excerpt=excerpt,
-                        media_id=media_id,
-                        status=pub_status,
-                        category_ids=cat_ids
-                    )
-
-                    if post_link:
-                        st.success(f"✅ Story Published Successfully: [View Post]({post_link})")
-
-                        if run_card:
-                            with st.spinner("🎨 Rendering Social Media Card..."):
-                                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                                pfx = f"{pub_card_prefix.strip()}_" if pub_card_prefix.strip() else ""
-                                out_name = f"{pfx}card_{timestamp}.png"
-                                out_dir = config.get("output_dir", os.path.join(os.path.expanduser("~"), "Downloads"))
-                                os.makedirs(out_dir, exist_ok=True)
-                                card_file = os.path.join(out_dir, out_name)
-
-                                generate_custom_card(
-                                    headline_text=title,
-                                    news_img_path=image_source,
-                                    template_path="ummat_frame.png",
-                                    output_path=card_file,
-                                    card_width=config.get("card_width", 1080),
-                                    card_height=config.get("card_height", 1350)
-                                )
-                                st.session_state["latest_card_path"] = card_file
-                                st.success(f"✨ Card saved to `{out_name}`")
-
-                        if run_seo:
-                            with st.spinner("🤖 Generating SEO description & hashtags..."):
-                                a_key, a_model = get_api_credentials(pub_ai_provider)
-                                prompt_seo = (
-                                    f"Based on headline: '{title}' and context: '{excerpt}', "
-                                    f"write one single-line concise English SEO description followed by 3-5 hashtags starting with #. "
-                                    f"Provide ONLY the description and hashtags without extra labels."
-                                )
-                                raw_seo = generate_ai_news(prompt_seo, provider=pub_ai_provider, api_key=a_key, model_name=a_model)
-                                clean_seo = sanitize_seo_text(raw_seo)
-                                final_seo = f"{title}\n\n{clean_seo}"
-                                st.session_state["pub_seo_preview"] = final_seo
-
-                    else:
-                        st.error("❌ Failed to publish post to WordPress. Check credentials in Settings.")
-
-    pub_card_file = st.session_state.get("latest_card_path", None)
-    seo_preview_val = st.session_state.get("pub_seo_preview", "")
-
-    if pub_card_file or seo_preview_val:
-        st.markdown("---")
-        st.markdown("#### 📦 Generated Publishing Assets")
-        out_c1, out_c2 = st.columns([1, 1])
-
-        with out_c1:
-            if pub_card_file and os.path.exists(pub_card_file):
-                st.markdown("##### 🖼️ Social Media Card")
-                st.image(pub_card_file, caption=os.path.basename(pub_card_file), width="stretch")
-                with open(pub_card_file, "rb") as f:
-                    st.download_button(
-                        label="💾 Download Generated Card",
-                        data=f.read(),
-                        file_name=os.path.basename(pub_card_file),
-                        mime="image/png",
-                        width="stretch"
-                    )
-
-        with out_c2:
-            if seo_preview_val:
-                st.markdown("##### 📊 SEO & Social Metadata")
-                st.text_area("SEO Copy Box:", value=seo_preview_val, height=280)
-
-
-# =========================================================
-# TAB 2: IMAGE RESIZER & COLLAGE STUDIO
-# =========================================================
-with tab_resizer:
-    render_image_resizer_tab(config)
-
-
-# =========================================================
-# TAB 3: AI NEWS STUDIO
-# =========================================================
-with tab_ai:
-    st.markdown("### 🤖 Generate Professional Urdu News via AI")
-
-    ai_raw_input = st.text_area(
-        "Enter Raw Points, Bullets, or Notes in Urdu/English:",
-        height=120,
-        placeholder="یہاں کچی خبر، نوٹس یا اہم نکات درج کریں..."
-    )
-
-    ai_c1, ai_c2 = st.columns(2)
-    with ai_c1:
-        current_ai = config.get("ai_provider", "Groq (Llama)")
-        provider_options = ["Groq (Llama)", "Google Gemini", "OpenAI (GPT)"]
-        default_index = provider_options.index(current_ai) if current_ai in provider_options else 0
-        ai_tab_provider = st.selectbox("AI Platform:", provider_options, key="ai_tab_p", index=default_index)
-    with ai_c2:
-        auto_load_pub = st.checkbox("Automatically load output into Direct Publisher", value=True)
-
-    if st.button("✨ Generate Urdu News Article", type="primary", width="stretch"):
-        if not ai_raw_input.strip():
-            st.warning("⚠️ Please provide input notes or points.")
-        else:
-            api_k, model_n = get_api_credentials(ai_tab_provider)
-            with st.spinner(f"🤖 Generating professional Urdu news article via {ai_tab_provider}..."):
-                generated_article = generate_ai_news(
-                    ai_raw_input.strip(), 
-                    provider=ai_tab_provider, 
-                    api_key=api_k, 
-                    model_name=model_n
-                )
-                st.session_state["ai_news_result"] = generated_article
-
-                if auto_load_pub:
-                    clean_for_pub = generated_article.replace("TITLE:", "").replace("EXCERPT:", "").replace("CONTENT:", "").strip()
-                    st.session_state["pub_story_text"] = clean_for_pub
-                    st.success("✅ News article generated and loaded into Direct Story Publisher!")
-
-    ai_result = st.session_state.get("ai_news_result", "")
-    if ai_result:
-        st.markdown("#### 📋 AI Generated Article Preview")
-        st.text_area("Generated Output:", value=ai_result, height=250)
-
-
-# =========================================================
-# TAB 4: SOCIAL MEDIA MANAGER
-# =========================================================
-with tab_social:
-    render_social_manager_tab(config)
-
-
-# =========================================================
-# TAB 5: CARD FROM URL
-# =========================================================
-with tab_url:
-    st.markdown("### 🔗 Generate Social Media Card by Story URL")
-
-    story_url_input = st.text_input("Enter Article URL:", placeholder="https://ummat.net/2026/08/article-name/")
-    
-    url_c1, url_c2 = st.columns(2)
-    with url_c1:
-        url_card_prefix = st.text_input("Card Name Prefix (Optional):", placeholder="e.g. url_news", key="url_pfx")
-    with url_c2:
-        current_ai = config.get("ai_provider", "Groq (Llama)")
-        provider_options = ["Groq (Llama)", "Google Gemini", "OpenAI (GPT)"]
-        default_index = provider_options.index(current_ai) if current_ai in provider_options else 0
-        url_ai_platform = st.selectbox("AI Platform for SEO:", provider_options, key="url_ai", index=default_index)
-
-    url_btn1, url_btn2 = st.columns(2)
-    gen_url_card = False
-    gen_url_seo = False
-
-    with url_btn1:
-        if st.button("⚡ Generate Card Only", width="stretch"):
-            gen_url_card = True
-    with url_btn2:
-        if st.button("🌐 Generate Card + SEO", type="primary", width="stretch"):
-            gen_url_card = True
-            gen_url_seo = True
-
-    if gen_url_card:
-        if not story_url_input.strip():
-            st.error("❌ Please provide a valid URL.")
-        else:
-            with st.spinner("🔍 Extracting article data and rendering card..."):
+            if media_id and post_id:
                 try:
-                    headers = {'User-Agent': 'Mozilla/5.0'}
-                    res = requests.get(story_url_input.strip(), headers=headers, timeout=15, verify=False)
-                    res.encoding = 'utf-8'
-                    soup = BeautifulSoup(res.text, 'html.parser')
-
-                    headline = ""
-                    title_tag = soup.find('h1') or soup.find('meta', property='og:title') or soup.find('title')
-                    if title_tag:
-                        headline = title_tag.get('content') if title_tag.name == 'meta' else title_tag.get_text().strip()
-                    else:
-                        headline = "Breaking News"
-
-                    headline = re.sub(r'\s*[-–|—]\s*(روزنامہ\s*امت|Ummat|Daily Ummat).*$', '', headline, flags=re.I).strip()
-
-                    target_img = None
-                    meta_img = soup.find('meta', property='og:image:secure_url') or soup.find('meta', property='og:image')
-                    if meta_img and meta_img.get('content'):
-                        target_img = meta_img['content']
-
-                    img_bytes = None
-                    if target_img:
-                        img_res = requests.get(target_img, headers=headers, timeout=15, verify=False)
-                        if img_res.status_code == 200:
-                            img_bytes = io.BytesIO(img_res.content)
-
-                    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                    pfx = f"{url_card_prefix.strip()}_" if url_card_prefix.strip() else ""
-                    out_name = f"{pfx}url_card_{timestamp}.png"
-                    out_dir = config.get("output_dir", os.path.join(os.path.expanduser("~"), "Downloads"))
-                    os.makedirs(out_dir, exist_ok=True)
-                    card_target = os.path.join(out_dir, out_name)
-
-                    generate_custom_card(
-                        headline_text=headline,
-                        news_img_path=img_bytes,
-                        template_path="ummat_frame.png",
-                        output_path=card_target,
-                        card_width=config.get("card_width", 1080),
-                        card_height=config.get("card_height", 1350)
+                    requests.post(
+                        f"{media_url}/{int(media_id)}",
+                        data=json.dumps({"post": int(post_id)}),
+                        headers=headers,
+                        timeout=10,
+                        verify=False
                     )
+                except Exception as attach_err:
+                    print(f"⚠️ Notice attaching media to post ID: {attach_err}")
 
-                    st.session_state["url_card_path"] = card_target
-                    st.success(f"✅ Card generated: `{out_name}`")
+            print(f"✅ WordPress Post Published: {post_link} (Featured Media ID: {post_data.get('featured_media')})")
+            return post_link
+        else:
+            print(f"❌ WP Post Error [{response.status_code}]: {response.text}")
+    except Exception as e:
+        print(f"❌ WP Exception Error: {e}")
 
-                    if gen_url_seo:
-                        k, m = get_api_credentials(url_ai_platform)
-                        prompt = f"Write one concise English SEO sentence followed by 5 hashtags starting with # for this Urdu headline: '{headline}'."
-                        raw_seo = generate_ai_news(prompt, provider=url_ai_platform, api_key=k, model_name=m)
-                        st.session_state["url_seo_output"] = f"{headline}\n\n{sanitize_seo_text(raw_seo)}"
-
-                except Exception as e:
-                    st.error(f"❌ Extraction error: {e}")
-
-    url_card_file = st.session_state.get("url_card_path", None)
-    if url_card_file and os.path.exists(url_card_file):
-        st.image(url_card_file, caption="Generated Card", width=450)
-        with open(url_card_file, "rb") as f:
-            st.download_button("💾 Download Card", data=f.read(), file_name=os.path.basename(url_card_file), mime="image/png")
-
-    url_seo = st.session_state.get("url_seo_output", "")
-    if url_seo:
-        st.text_area("Generated SEO:", value=url_seo, height=120)
-
-
-# =========================================================
-# TAB 6: BRANDING & SETTINGS
-# =========================================================
-with tab_settings:
-    st.markdown("### ⚙️ Master Branding & System Configuration")
-
-    with st.form("settings_form"):
-        st.markdown("#### 📁 Directories & Dimensions")
-        out_dir_val = st.text_input("Output Directory:", value=config.get("output_dir", ""))
-        
-        d_c1, d_c2 = st.columns(2)
-        with d_c1:
-            r_w = st.number_input("Resizer Canvas Width:", value=int(config.get("resizer_width", 1200)))
-            r_h = st.number_input("Resizer Canvas Height:", value=int(config.get("resizer_height", 720)))
-        with d_c2:
-            c_w = st.number_input("Social Card Width:", value=int(config.get("card_width", 1080)))
-            c_h = st.number_input("Social Card Height:", value=int(config.get("card_height", 1350)))
-
-        st.markdown("#### 🔑 WordPress API Credentials")
-        wp_url_val = st.text_input("WordPress URL:", value=config.get("wp_url", ""))
-        wp_u1, wp_u2 = st.columns(2)
-        with wp_u1:
-            wp_user_val = st.text_input("WordPress Username:", value=config.get("wp_user", ""))
-        with wp_u2:
-            wp_pass_val = st.text_input("Application Password:", value=config.get("wp_pass", ""), type="password")
-
-        st.markdown("#### 🤖 AI Platform API Keys & Models")
-        
-        groq_c1, groq_c2 = st.columns(2)
-        with groq_c1:
-            groq_k = st.text_input("Groq API Key:", value=config.get("groq_key", ""), type="password")
-        with groq_c2:
-            groq_m = st.text_input("Groq Model ID:", value=config.get("groq_model", "groq/compound"))
-
-        gem_c1, gem_c2 = st.columns(2)
-        with gem_c1:
-            gem_k = st.text_input("Gemini API Key:", value=config.get("gemini_key", ""), type="password")
-        with gem_c2:
-            gem_m = st.text_input("Gemini Model ID:", value=config.get("gemini_model", "gemini-3.5-flash-lite"))
-
-        oa_c1, oa_c2 = st.columns(2)
-        with oa_c1:
-            oa_k = st.text_input("OpenAI API Key:", value=config.get("openai_key", ""), type="password")
-        with oa_c2:
-            oa_m = st.text_input("OpenAI Model ID:", value=config.get("openai_model", "gpt-4o-mini"))
-
-        save_btn = st.form_submit_button("💾 Save All Settings Encrypted", type="primary")
-
-        if save_btn:
-            new_config = {
-                "master_password": expected_app_password,
-                "wp_url": wp_url_val.strip(),
-                "wp_user": wp_user_val.strip(),
-                "wp_pass": wp_pass_val.strip(),
-                "ai_provider": config.get("ai_provider", "Groq (Llama)"),
-                "groq_key": groq_k.strip(),
-                "groq_model": groq_m.strip(),
-                "gemini_key": gem_k.strip(),
-                "gemini_model": gem_m.strip(),
-                "openai_key": oa_k.strip(),
-                "openai_model": oa_m.strip(),
-                "output_dir": out_dir_val.strip(),
-                "logo_path": config.get("logo_path", "ummat bug final.png"),
-                "resizer_width": int(r_w),
-                "resizer_height": int(r_h),
-                "card_width": int(c_w),
-                "card_height": int(c_h)
-            }
-            if save_master_config(new_config):
-                st.success("✅ Configuration saved securely!")
-                st.rerun()
-            else:
-                st.error("❌ Error saving encrypted configuration.")
+    return None
