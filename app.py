@@ -332,28 +332,37 @@ with tab_pub:
     extracted_title = lines_preview[0] if lines_preview else ""
 
     st.markdown("#### 🖼️ Thumbnail Source")
-    thumb_col1, thumb_col2 = st.columns([1, 1])
-
+    
+    # Check for transferred image from Resizer Studio
     transferred_thumb = st.session_state.get("story_img_path", None)
     transferred_name = st.session_state.get("story_img_name", None)
 
     if transferred_thumb and os.path.exists(transferred_thumb):
         display_name = transferred_name if transferred_name else os.path.basename(transferred_thumb)
-        st.info(f"✅ Image loaded: `{display_name}`")
-        if st.button("❌ Remove Loaded Thumbnail"):
-            del st.session_state["story_img_path"]
-            if "story_img_name" in st.session_state:
-                del st.session_state["story_img_name"]
-            st.rerun()
+        
+        info_c1, info_c2 = st.columns([3, 1])
+        with info_c1:
+            st.success(f"✅ Active Thumbnail Loaded from Resizer: `{display_name}`")
+        with info_c2:
+            if st.button("❌ Remove Active Thumbnail", width="stretch"):
+                del st.session_state["story_img_path"]
+                if "story_img_name" in st.session_state:
+                    del st.session_state["story_img_name"]
+                if "pub_card_custom_prefix" in st.session_state:
+                    del st.session_state["pub_card_custom_prefix"]
+                st.rerun()
+                
+        st.image(transferred_thumb, caption=f"Selected Featured Thumbnail: {display_name}", width=320)
 
+    thumb_col1, thumb_col2 = st.columns([1, 1])
     with thumb_col1:
-        pub_local_img = st.file_uploader("Upload Image File:", type=["png", "jpg", "jpeg", "webp"], key="pub_file_up")
+        pub_local_img = st.file_uploader("Or Upload Local File:", type=["png", "jpg", "jpeg", "webp"], key="pub_file_up")
     with thumb_col2:
-        pub_thumb_url = st.text_input("Or Image / Story Web URL:", placeholder="https://example.com/photo.jpg")
+        pub_thumb_url = st.text_input("Or Paste Web Image URL:", placeholder="https://example.com/photo.jpg", key="pub_url_input")
 
     with st.expander("🖼️ Quick Featured Image Generator (1200x630)", expanded=False):
         st.caption("Compose a 1200x630 banner with Nastaliq typography and auto-attach as featured image.")
-        quick_hl = st.text_input("Card Headline:", value=extracted_title, placeholder="سرخی درج کریں...")
+        quick_hl = st.text_input("Card Headline:", value=extracted_title, placeholder="سرخی درج کریں...", key="quick_hl_input")
         quick_photo = st.file_uploader("Upload Center Photo:", type=["jpg", "png", "webp"], key="quick_photo_up")
 
         if st.button("🎨 Generate & Attach Banner", key="btn_gen_quick_card"):
@@ -377,12 +386,13 @@ with tab_pub:
 
                 st.session_state["story_img_path"] = temp_card_path
                 st.session_state["story_img_name"] = custom_banner_name
+                st.session_state["pub_card_custom_prefix"] = clean_base
                 st.image(card_img, caption="Generated 1200x630 Featured Image", width="stretch")
                 st.download_button("💾 Download Banner", data=img_bytes, file_name=custom_banner_name, mime="image/png")
                 st.success(f"✅ Attached as `{custom_banner_name}`!")
                 st.rerun()
 
-    caption_text = st.text_input("Image Caption (تصویر کا کیپشن):", placeholder="تصویر کا عنوان یا کیپشن...")
+    caption_text = st.text_input("Image Caption (تصویر کا کیپشن):", placeholder="تصویر کا عنوان یا کیپشن...", key="pub_caption_input")
 
     st.markdown("#### 📂 Taxonomy & Configuration")
     tax_c1, tax_c2, tax_c3 = st.columns([2, 1, 1.5])
@@ -390,19 +400,20 @@ with tab_pub:
     with tax_c1:
         cats_map = fetch_wordpress_categories(config.get("wp_url", ""), config.get("wp_user", ""), config.get("wp_pass", ""))
         cat_names = list(cats_map.keys()) if cats_map else ["Standard News"]
-        selected_category = st.selectbox("WordPress Category:", cat_names)
+        selected_category = st.selectbox("WordPress Category:", cat_names, key="pub_cat_select")
 
     with tax_c2:
-        pub_status = st.selectbox("Post Status:", ["draft", "publish"])
+        pub_status = st.selectbox("Post Status:", ["draft", "publish"], key="pub_status_select")
 
     with tax_c3:
         current_ai = config.get("ai_provider", "Groq (Llama)")
         provider_options = ["Groq (Llama)", "Google Gemini", "OpenAI (GPT)"]
         default_index = provider_options.index(current_ai) if current_ai in provider_options else 0
-        pub_ai_provider = st.selectbox("SEO AI Engine:", provider_options, index=default_index)
+        pub_ai_provider = st.selectbox("SEO AI Engine:", provider_options, index=default_index, key="pub_ai_select")
 
-    default_prefix = os.path.splitext(transferred_name)[0] if transferred_name else ""
-    pub_card_prefix = st.text_input("Custom Card Filename Prefix (Optional):", value=default_prefix, placeholder="e.g. breaking_news")
+    # Read the custom prefix transferred from resizer if available
+    preset_pub_pfx = st.session_state.get("pub_card_custom_prefix", "")
+    pub_card_prefix = st.text_input("Custom Card Filename Prefix (Optional):", value=preset_pub_pfx, placeholder="e.g. breaking_news", key="pub_card_pfx_input")
 
     st.markdown("---")
     act_c1, act_c2, act_c3, act_c4 = st.columns(4)
@@ -418,6 +429,8 @@ with tab_pub:
                 del st.session_state["story_img_path"]
             if "story_img_name" in st.session_state:
                 del st.session_state["story_img_name"]
+            if "pub_card_custom_prefix" in st.session_state:
+                del st.session_state["pub_card_custom_prefix"]
             st.session_state["pub_seo_preview"] = ""
             st.rerun()
 
@@ -449,6 +462,7 @@ with tab_pub:
                 raw_content = "\n\n".join(lines[2:]) if len(lines) > 2 else excerpt
                 html_content = markdown.markdown(raw_content)
 
+                # Prioritize transferred image from resizer, then local upload, then URL
                 image_source = None
                 if transferred_thumb and os.path.exists(transferred_thumb):
                     image_source = transferred_thumb
