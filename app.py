@@ -211,65 +211,6 @@ def resolve_font(font_names: list, size: int) -> ImageFont.FreeTypeFont:
         return ImageFont.load_default()
 
 
-def create_news_card(
-    headline_text: str,
-    news_img_source=None,
-    width: int = 1200,
-    height: int = 630,
-    header_text: str = "UMMAT.NET | LATEST NEWS"
-) -> Image.Image:
-    img = Image.new('RGB', (width, height), color='#1e293b')
-    draw = ImageDraw.Draw(img)
-
-    draw.rectangle([(0, 0), (width, 70)], fill='#0f172a')
-    font_header = resolve_font(["arial.ttf", "Arial.ttf"], 28)
-    draw.text((40, 20), header_text, fill="#38bdf8", font=font_header)
-
-    box_x1, box_y1 = 40, 85
-    box_x2, box_y2 = width - 40, 430
-    box_w, box_h = box_x2 - box_x1, box_y2 - box_y1
-
-    if news_img_source:
-        try:
-            if isinstance(news_img_source, Image.Image):
-                photo = news_img_source.convert('RGB')
-            elif hasattr(news_img_source, "getvalue"):
-                photo = Image.open(news_img_source).convert('RGB')
-            elif isinstance(news_img_source, str) and os.path.exists(news_img_source):
-                photo = Image.open(news_img_source).convert('RGB')
-            else:
-                photo = None
-
-            if photo:
-                fitted_photo = ImageOps.fit(photo, (box_w, box_h), Image.Resampling.LANCZOS)
-                img.paste(fitted_photo, (box_x1, box_y1))
-        except Exception:
-            draw.rectangle([(box_x1, box_y1), (box_x2, box_y2)], fill='#334155')
-    else:
-        draw.rectangle([(box_x1, box_y1), (box_x2, box_y2)], fill='#334155', outline='#475569', width=2)
-
-    draw.rectangle([(0, height - 30), (width, height)], fill='#0f172a')
-
-    font_candidates = [
-        "JameelNoori.ttf",
-        "jameel custom.ttf",
-        "Jameel Custom.ttf",
-        "Jameel Noori Nastaleeq.ttf",
-        "urdu_font.ttf"
-    ]
-    font_headline = resolve_font(font_candidates, 44)
-
-    try:
-        reshaped = arabic_reshaper.reshape(headline_text)
-        bidi_text = get_display(reshaped)
-    except Exception:
-        bidi_text = headline_text
-
-    text_y = (box_y2 + height - 30) // 2
-    draw.text((width // 2, text_y), bidi_text, fill="#ffffff", font=font_headline, anchor="mm")
-    return img
-
-
 # ---------------------------------------------------------
 # 2. FULL-APP AUTHENTICATION GATEKEEPER
 # ---------------------------------------------------------
@@ -333,7 +274,6 @@ with tab_pub:
 
     st.markdown("#### 🖼️ Thumbnail Source")
     
-    # Check for transferred image from Resizer Studio
     transferred_thumb = st.session_state.get("story_img_path", None)
     transferred_name = st.session_state.get("story_img_name", None)
 
@@ -352,45 +292,13 @@ with tab_pub:
                     del st.session_state["pub_card_custom_prefix"]
                 st.rerun()
                 
-        st.image(transferred_thumb, caption=f"Selected Featured Thumbnail: {display_name}", width=320)
+        st.image(transferred_thumb, caption=f"Ready for Publishing: {display_name}", width=350)
 
     thumb_col1, thumb_col2 = st.columns([1, 1])
     with thumb_col1:
         pub_local_img = st.file_uploader("Or Upload Local File:", type=["png", "jpg", "jpeg", "webp"], key="pub_file_up")
     with thumb_col2:
         pub_thumb_url = st.text_input("Or Paste Web Image URL:", placeholder="https://example.com/photo.jpg", key="pub_url_input")
-
-    with st.expander("🖼️ Quick Featured Image Generator (1200x630)", expanded=False):
-        st.caption("Compose a 1200x630 banner with Nastaliq typography and auto-attach as featured image.")
-        quick_hl = st.text_input("Card Headline:", value=extracted_title, placeholder="سرخی درج کریں...", key="quick_hl_input")
-        quick_photo = st.file_uploader("Upload Center Photo:", type=["jpg", "png", "webp"], key="quick_photo_up")
-
-        if st.button("🎨 Generate & Attach Banner", key="btn_gen_quick_card"):
-            if not quick_hl.strip():
-                st.warning("Please provide a headline.")
-            else:
-                card_img = create_news_card(
-                    headline_text=quick_hl.strip(),
-                    news_img_source=quick_photo if quick_photo else (transferred_thumb if transferred_thumb else pub_local_img)
-                )
-                buf = io.BytesIO()
-                card_img.save(buf, format="PNG")
-                img_bytes = buf.getvalue()
-
-                clean_base = re.sub(r'[^a-zA-Z0-9-_\s]', '', quick_hl[:30]).strip().replace(' ', '_') or "featured"
-                custom_banner_name = f"{clean_base}_{datetime.now().strftime('%H%M%S')}.png"
-
-                temp_card_path = os.path.join(tempfile.gettempdir(), custom_banner_name)
-                with open(temp_card_path, "wb") as f:
-                    f.write(img_bytes)
-
-                st.session_state["story_img_path"] = temp_card_path
-                st.session_state["story_img_name"] = custom_banner_name
-                st.session_state["pub_card_custom_prefix"] = clean_base
-                st.image(card_img, caption="Generated 1200x630 Featured Image", width="stretch")
-                st.download_button("💾 Download Banner", data=img_bytes, file_name=custom_banner_name, mime="image/png")
-                st.success(f"✅ Attached as `{custom_banner_name}`!")
-                st.rerun()
 
     caption_text = st.text_input("Image Caption (تصویر کا کیپشن):", placeholder="تصویر کا عنوان یا کیپشن...", key="pub_caption_input")
 
@@ -411,7 +319,6 @@ with tab_pub:
         default_index = provider_options.index(current_ai) if current_ai in provider_options else 0
         pub_ai_provider = st.selectbox("SEO AI Engine:", provider_options, index=default_index, key="pub_ai_select")
 
-    # Read the custom prefix transferred from resizer if available
     preset_pub_pfx = st.session_state.get("pub_card_custom_prefix", "")
     pub_card_prefix = st.text_input("Custom Card Filename Prefix (Optional):", value=preset_pub_pfx, placeholder="e.g. breaking_news", key="pub_card_pfx_input")
 
@@ -462,7 +369,6 @@ with tab_pub:
                 raw_content = "\n\n".join(lines[2:]) if len(lines) > 2 else excerpt
                 html_content = markdown.markdown(raw_content)
 
-                # Prioritize transferred image from resizer, then local upload, then URL
                 image_source = None
                 if transferred_thumb and os.path.exists(transferred_thumb):
                     image_source = transferred_thumb
@@ -536,10 +442,32 @@ with tab_pub:
                     else:
                         st.error("❌ Failed to publish post to WordPress. Check credentials in Settings.")
 
+    # Render Generated Assets (Card Preview + Download + SEO Box)
+    pub_card_file = st.session_state.get("latest_card_path", None)
     seo_preview_val = st.session_state.get("pub_seo_preview", "")
-    if seo_preview_val:
-        st.markdown("#### 📋 Generated SEO Metadata")
-        st.text_area("SEO Copy Box:", value=seo_preview_val, height=120)
+
+    if pub_card_file or seo_preview_val:
+        st.markdown("---")
+        st.markdown("#### 📦 Generated Publishing Assets")
+        out_c1, out_c2 = st.columns([1, 1])
+
+        with out_c1:
+            if pub_card_file and os.path.exists(pub_card_file):
+                st.markdown("##### 🖼️ Social Media Card")
+                st.image(pub_card_file, caption=os.path.basename(pub_card_file), width="stretch")
+                with open(pub_card_file, "rb") as f:
+                    st.download_button(
+                        label="💾 Download Generated Card",
+                        data=f.read(),
+                        file_name=os.path.basename(pub_card_file),
+                        mime="image/png",
+                        width="stretch"
+                    )
+
+        with out_c2:
+            if seo_preview_val:
+                st.markdown("##### 📊 SEO & Social Metadata")
+                st.text_area("SEO Copy Box:", value=seo_preview_val, height=280)
 
 
 # =========================================================
