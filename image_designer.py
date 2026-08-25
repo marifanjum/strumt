@@ -5,6 +5,7 @@ import base64
 import asyncio
 import concurrent.futures
 import requests
+import tempfile
 import urllib.parse
 from datetime import datetime
 from playwright.async_api import async_playwright
