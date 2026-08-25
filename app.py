@@ -1,3 +1,20 @@
+import sys
+import subprocess
+import streamlit as st
+
+@st.cache_resource
+def ensure_playwright_installed():
+    try:
+        # Install chromium and any missing linux OS dependencies
+        subprocess.run(
+            [sys.executable, "-m", "playwright", "install", "--with-deps", "chromium"],
+            check=True
+        )
+    except Exception as e:
+        print(f"Playwright installation note: {e}")
+
+ensure_playwright_installed()
+
 import os
 import io
 import re
