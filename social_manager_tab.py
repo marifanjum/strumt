@@ -131,16 +131,16 @@ def render_social_manager_tab(config: dict):
     do_seo = False
 
     with btn_col1:
-        if st.button("✨ Generate Only Card", use_container_width=True):
+        if st.button("✨ Generate Only Card", width="stretch"):
             do_card = True
 
     with btn_col2:
-        if st.button("🚀 Generate Card & SEO", type="primary", use_container_width=True):
+        if st.button("🚀 Generate Card & SEO", type="primary", width="stretch"):
             do_card = True
             do_seo = True
 
     with btn_col3:
-        if st.button("🔍 Generate Only SEO", use_container_width=True):
+        if st.button("🔍 Generate Only SEO", width="stretch"):
             do_seo = True
 
     # Execution Handlers
@@ -200,14 +200,14 @@ def render_social_manager_tab(config: dict):
         st.markdown("#### 🖼️ Social Card Output")
         latest_card = st.session_state.get("latest_card_path", None)
         if latest_card and os.path.exists(latest_card):
-            st.image(latest_card, caption="Generated Social Media Card", use_container_width=True)
+            st.image(latest_card, caption="Generated Social Media Card", width="stretch")
             with open(latest_card, "rb") as f:
                 st.download_button(
                     label="💾 Download Card Image",
                     data=f.read(),
                     file_name=os.path.basename(latest_card),
                     mime="image/png",
-                    use_container_width=True
+                    width="stretch"
                 )
         else:
             st.info("No card generated yet. Click 'Generate Only Card' or 'Generate Card & SEO' above.")
