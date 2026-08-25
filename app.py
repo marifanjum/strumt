@@ -1,20 +1,3 @@
-import sys
-import subprocess
-import streamlit as st
-
-@st.cache_resource
-def ensure_playwright_installed():
-    try:
-        # Install chromium and any missing linux OS dependencies
-        subprocess.run(
-            [sys.executable, "-m", "playwright", "install", "--with-deps", "chromium"],
-            check=True
-        )
-    except Exception as e:
-        print(f"Playwright installation note: {e}")
-
-ensure_playwright_installed()
-
 import os
 import io
 import re
@@ -23,11 +6,13 @@ import tempfile
 import pathlib
 import urllib.parse
 from datetime import datetime
+import sys
+import subprocess
+import streamlit as st
 
 import requests
 import markdown
 from bs4 import BeautifulSoup
-import streamlit as st
 from cryptography.fernet import Fernet
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 import arabic_reshaper
@@ -39,6 +24,20 @@ from image_designer import generate_custom_card
 from ai_news_generator import generate_ai_news
 from social_manager_tab import render_social_manager_tab
 from image_resizer_tab import render_image_resizer_tab
+
+
+@st.cache_resource
+def ensure_playwright_installed():
+    try:
+        # Download the Chromium browser binary without triggering sudo
+        subprocess.run(
+            [sys.executable, "-m", "playwright", "install", "chromium"],
+            check=True
+        )
+    except Exception as e:
+        print(f"Playwright installation note: {e}")
+
+ensure_playwright_installed()
 
 
 # ---------------------------------------------------------
