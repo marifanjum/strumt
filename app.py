@@ -198,17 +198,53 @@ def sanitize_seo_text(raw_text: str) -> str:
     return cleaned.strip()
 
 
-def resolve_font(font_names: list, size: int) -> ImageFont.FreeTypeFont:
-    for f in font_names:
-        if f and os.path.exists(f):
-            try:
-                return ImageFont.truetype(f, size)
-            except Exception:
-                continue
+def resolve_direct_image_source(url_str: str):
+    """Fetches direct image binary or scrapes og:image / first img from a webpage URL."""
+    if not url_str or not url_str.strip():
+        return None
+
+    clean_url = url_str.strip()
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+
     try:
-        return ImageFont.truetype("arial.ttf", size)
-    except Exception:
-        return ImageFont.load_default()
+        # Direct image link check
+        parsed_path = urllib.parse.urlparse(clean_url).path.lower()
+        if parsed_path.endswith(('.png', '.jpg', '.jpeg', '.webp', '.gif')):
+            resp = requests.get(clean_url, headers=headers, timeout=15, verify=False)
+            if resp.status_code == 200 and len(resp.content) > 500:
+                return io.BytesIO(resp.content)
+
+        # Scrape og:image / twitter:image from HTML
+        res = requests.get(clean_url, headers=headers, timeout=15, verify=False)
+        res.encoding = 'utf-8'
+        soup = BeautifulSoup(res.text, 'html.parser')
+
+        target_img_url = None
+        meta_img = (
+            soup.find('meta', property='og:image:secure_url') or 
+            soup.find('meta', property='og:image') or 
+            soup.find('meta', attrs={'name': 'twitter:image'})
+        )
+
+        if meta_img and meta_img.get('content'):
+            target_img_url = meta_img['content']
+        else:
+            img_tag = soup.find('img')
+            if img_tag and img_tag.get('src'):
+                target_img_url = img_tag['src']
+
+        if target_img_url:
+            if not target_img_url.startswith('http'):
+                target_img_url = urllib.parse.urljoin(clean_url, target_img_url)
+
+            img_resp = requests.get(target_img_url, headers=headers, timeout=15, verify=False)
+            if img_resp.status_code == 200 and len(img_resp.content) > 500:
+                return io.BytesIO(img_resp.content)
+
+    except Exception as e:
+        print(f"URL image extraction notice: {e}")
+
+    return clean_url
 
 
 # ---------------------------------------------------------
@@ -282,7 +318,7 @@ with tab_pub:
         
         info_c1, info_c2 = st.columns([3, 1])
         with info_c1:
-            st.success(f"✅ Active Thumbnail Loaded from Resizer: `{display_name}`")
+            st.success(f"✅ Active Thumbnail Loaded: `{display_name}`")
         with info_c2:
             if st.button("❌ Remove Active Thumbnail", width="stretch"):
                 del st.session_state["story_img_path"]
@@ -298,7 +334,7 @@ with tab_pub:
     with thumb_col1:
         pub_local_img = st.file_uploader("Or Upload Local File:", type=["png", "jpg", "jpeg", "webp"], key="pub_file_up")
     with thumb_col2:
-        pub_thumb_url = st.text_input("Or Paste Web Image URL:", placeholder="https://example.com/photo.jpg", key="pub_url_input")
+        pub_thumb_url = st.text_input("Or Paste Image / Web Story URL:", placeholder="https://example.com/photo.jpg or article URL", key="pub_url_input")
 
     caption_text = st.text_input("Image Caption (تصویر کا کیپشن):", placeholder="تصویر کا عنوان یا کیپشن...", key="pub_caption_input")
 
@@ -375,7 +411,7 @@ with tab_pub:
                 elif pub_local_img is not None:
                     image_source = pub_local_img
                 elif pub_thumb_url.strip():
-                    image_source = pub_thumb_url.strip()
+                    image_source = resolve_direct_image_source(pub_thumb_url.strip())
 
                 cat_ids = [cats_map[selected_category]] if (cats_map and selected_category in cats_map) else []
 
