@@ -315,7 +315,7 @@ with tab_pub:
                     f.write(img_bytes)
 
                 st.session_state["story_img_path"] = temp_card_path
-                st.image(card_img, caption="Generated 1200x630 Featured Image", use_container_width=True)
+                st.image(card_img, caption="Generated 1200x630 Featured Image", width="stretch")
                 st.download_button("💾 Download Banner", data=img_bytes, file_name="featured_image.png", mime="image/png")
                 st.success("✅ Set as the active featured thumbnail for Direct Publishing!")
                 st.rerun()
@@ -350,7 +350,7 @@ with tab_pub:
     run_seo = False
 
     with act_c1:
-        if st.button("🧹 Clear All Fields", use_container_width=True):
+        if st.button("🧹 Clear All Fields", width="stretch"):
             st.session_state["pub_story_text"] = ""
             if "story_img_path" in st.session_state:
                 del st.session_state["story_img_path"]
@@ -358,16 +358,16 @@ with tab_pub:
             st.rerun()
 
     with act_c2:
-        if st.button("🚀 Post Only", use_container_width=True):
+        if st.button("🚀 Post Only", width="stretch"):
             run_post = True
 
     with act_c3:
-        if st.button("⚡ Post + Card", type="primary", use_container_width=True):
+        if st.button("⚡ Post + Card", type="primary", width="stretch"):
             run_post = True
             run_card = True
 
     with act_c4:
-        if st.button("🌐 Post + Card + SEO", use_container_width=True):
+        if st.button("🌐 Post + Card + SEO", width="stretch"):
             run_post = True
             run_card = True
             run_seo = True
@@ -494,7 +494,7 @@ with tab_ai:
     with ai_c2:
         auto_load_pub = st.checkbox("Automatically load output into Direct Publisher", value=True)
 
-    if st.button("✨ Generate Urdu News Article", type="primary", use_container_width=True):
+    if st.button("✨ Generate Urdu News Article", type="primary", width="stretch"):
         if not ai_raw_input.strip():
             st.warning("⚠️ Please provide input notes or points.")
         else:
@@ -545,10 +545,10 @@ with tab_url:
     gen_url_seo = False
 
     with url_btn1:
-        if st.button("⚡ Generate Card Only", use_container_width=True):
+        if st.button("⚡ Generate Card Only", width="stretch"):
             gen_url_card = True
     with url_btn2:
-        if st.button("🌐 Generate Card + SEO", type="primary", use_container_width=True):
+        if st.button("🌐 Generate Card + SEO", type="primary", width="stretch"):
             gen_url_card = True
             gen_url_seo = True
 
