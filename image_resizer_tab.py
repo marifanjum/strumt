@@ -416,7 +416,7 @@ def render_image_resizer_tab(config: dict):
     )
 
     st.markdown("#### 👁️ Canvas Preview")
-    st.image(rendered_image, caption=f"Canvas Output ({canvas_w}x{canvas_h})", use_container_width=True)
+    st.image(rendered_image, caption=f"Canvas Output ({canvas_w}x{canvas_h})", width="stretch")
 
     # 4. Save & Inter-Tab Action Bar
     st.markdown("---")
@@ -445,11 +445,11 @@ def render_image_resizer_tab(config: dict):
             data=img_bytes,
             file_name=clean_name,
             mime=f"image/{fmt.lower()}",
-            use_container_width=True
+            width="stretch"
         )
 
     with bot_c4:
-        if st.button("🚀 Send to Publisher", type="primary", use_container_width=True):
+        if st.button("🚀 Send to Publisher", type="primary", width="stretch"):
             temp_p = os.path.join(tempfile.gettempdir(), clean_name)
             with open(temp_p, "wb") as f:
                 f.write(img_bytes)
@@ -458,7 +458,7 @@ def render_image_resizer_tab(config: dict):
             st.success(f"✅ Sent to Direct Publisher as `{clean_name}`!")
 
     with bot_c5:
-        if st.button("🌐 Send to Social Manager", use_container_width=True):
+        if st.button("🌐 Send to Social Manager", width="stretch"):
             temp_p = os.path.join(tempfile.gettempdir(), clean_name)
             with open(temp_p, "wb") as f:
                 f.write(img_bytes)
