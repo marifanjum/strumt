@@ -471,10 +471,11 @@ def render_image_resizer_tab(config: dict):
             temp_p = os.path.join(tempfile.gettempdir(), final_filename)
             with open(temp_p, "wb") as f:
                 f.write(img_bytes)
+            # Force set both session states explicitly
             st.session_state["story_img_path"] = temp_p
             st.session_state["story_img_name"] = final_filename
             st.session_state["pub_card_custom_prefix"] = clean_name
-            st.success(f"✅ Transferred to Direct Publisher as `{final_filename}`!")
+            st.success(f"✅ Transferred to Direct Publisher as `{final_filename}`! Switch to the Publisher tab.")
 
     with bot_c5:
         if st.button("🌐 Send to Social Manager", width="stretch"):
