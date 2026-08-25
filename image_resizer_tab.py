@@ -307,6 +307,22 @@ def render_resizer_canvas(
     return canvas
 
 
+def on_single_upload_change():
+    """Callback to automatically load the uploaded file's base name into the filename input field."""
+    uploaded = st.session_state.get("single_resizer_uploader")
+    if uploaded:
+        base_name = os.path.splitext(uploaded.name)[0]
+        st.session_state["resizer_user_filename"] = base_name
+
+
+def on_collage_upload_change():
+    """Callback to load the first file's base name into the filename input field for collages."""
+    uploaded_list = st.session_state.get("collage_uploader")
+    if uploaded_list and len(uploaded_list) > 0:
+        base_name = os.path.splitext(uploaded_list[0].name)[0]
+        st.session_state["resizer_user_filename"] = f"{base_name}_collage"
+
+
 def render_image_resizer_tab(config: dict):
     st.markdown("### 🖼️ Image Resizer & Collage Studio")
 
@@ -351,11 +367,14 @@ def render_image_resizer_tab(config: dict):
     loaded_images = []
 
     if mode == "Single Image Mode":
-        single_file = st.file_uploader("Upload Image:", type=["png", "jpg", "jpeg", "webp"], key="single_resizer_uploader")
+        single_file = st.file_uploader(
+            "Upload Image:", 
+            type=["png", "jpg", "jpeg", "webp"], 
+            key="single_resizer_uploader",
+            on_change=on_single_upload_change
+        )
         if single_file:
             loaded_images.append(Image.open(single_file))
-            if "resizer_user_filename" not in st.session_state or not st.session_state["resizer_user_filename"]:
-                st.session_state["resizer_user_filename"] = os.path.splitext(single_file.name)[0]
         else:
             loaded_images.append(None)
     else:
@@ -363,7 +382,8 @@ def render_image_resizer_tab(config: dict):
             f"Upload up to {collage_count} Images for Collage:", 
             type=["png", "jpg", "jpeg", "webp"], 
             accept_multiple_files=True,
-            key="collage_uploader"
+            key="collage_uploader",
+            on_change=on_collage_upload_change
         )
         for i in range(collage_count):
             if uploaded_files and i < len(uploaded_files):
@@ -408,11 +428,12 @@ def render_image_resizer_tab(config: dict):
     st.markdown("---")
     bot_c1, bot_c2, bot_c3, bot_c4, bot_c5 = st.columns([2, 1, 1.5, 1.5, 1.5])
 
+    # Ensure a default exists in session state before widget renders
     if "resizer_user_filename" not in st.session_state:
         st.session_state["resizer_user_filename"] = f"image_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
     with bot_c1:
-        filename_input = st.text_input(
+        st.text_input(
             "Filename (without extension):", 
             key="resizer_user_filename"
         )
@@ -423,6 +444,7 @@ def render_image_resizer_tab(config: dict):
     ext = ".webp" if "WebP" in format_choice else (".jpg" if "JPG" in format_choice else ".png")
     fmt = "WEBP" if "WebP" in format_choice else ("JPEG" if "JPG" in format_choice else "PNG")
     
+    # Read the updated typed filename directly from session_state
     raw_typed_name = st.session_state.get("resizer_user_filename", "").strip()
     raw_clean_name = os.path.splitext(raw_typed_name)[0]
     clean_name = re.sub(r'[^a-zA-Z0-9-_\s]', '', raw_clean_name).strip().replace(' ', '_')
