@@ -75,11 +75,9 @@ def get_or_create_cipher() -> Fernet:
 
 
 def get_secret_val(key_name: str, section: str = None, default=""):
-    """Safely retrieves keys matching flat or section-based TOML tables."""
     if not hasattr(st, "secrets") or not st.secrets:
         return default
 
-    # 1. Explicit section check (e.g. st.secrets["ai"]["gemini_key"])
     if section and section in st.secrets:
         try:
             if key_name in st.secrets[section]:
@@ -88,13 +86,11 @@ def get_secret_val(key_name: str, section: str = None, default=""):
         except Exception:
             pass
 
-    # 2. Top-level root check
     if key_name in st.secrets:
         val = st.secrets[key_name]
         if not isinstance(val, dict):
             return val if val is not None else default
 
-    # 3. Recursive lookup fallback
     for s_name in st.secrets.keys():
         s_val = st.secrets[s_name]
         if isinstance(s_val, dict) and key_name in s_val:
@@ -113,13 +109,9 @@ def load_master_config() -> dict:
 
     default_config = {
         "master_password": raw_pwd,
-        
-        # [wordpress]
         "wp_url": str(get_secret_val("wp_url", section="wordpress", default="")).strip(),
         "wp_user": str(get_secret_val("wp_user", section="wordpress", default="")).strip(),
         "wp_pass": str(get_secret_val("wp_pass", section="wordpress", default="")).strip(),
-        
-        # [ai]
         "ai_provider": str(get_secret_val("provider", section="ai", default=get_secret_val("ai_provider", default="Groq (Llama)"))).strip(),
         "groq_key": str(get_secret_val("groq_key", section="ai", default="")).strip(),
         "groq_model": str(get_secret_val("groq_model", section="ai", default="groq/compound")).strip(),
@@ -127,8 +119,6 @@ def load_master_config() -> dict:
         "gemini_model": str(get_secret_val("gemini_model", section="ai", default="gemini-3.5-flash-lite")).strip(),
         "openai_key": str(get_secret_val("openai_key", section="ai", default="")).strip(),
         "openai_model": str(get_secret_val("openai_model", section="ai", default="gpt-4o-mini")).strip(),
-        
-        # Dimensions & Output
         "output_dir": str(get_secret_val("output_dir", default=str(pathlib.Path.home() / "Downloads" / "NewsAppOutputs"))).strip(),
         "logo_path": "ummat bug final.png",
         "resizer_width": int(get_secret_val("resizer_width", default=1200)),
@@ -198,55 +188,6 @@ def sanitize_seo_text(raw_text: str) -> str:
     return cleaned.strip()
 
 
-def resolve_direct_image_source(url_str: str):
-    """Fetches direct image binary or scrapes og:image / first img from a webpage URL."""
-    if not url_str or not url_str.strip():
-        return None
-
-    clean_url = url_str.strip()
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-
-    try:
-        # Direct image link check
-        parsed_path = urllib.parse.urlparse(clean_url).path.lower()
-        if parsed_path.endswith(('.png', '.jpg', '.jpeg', '.webp', '.gif')):
-            resp = requests.get(clean_url, headers=headers, timeout=15, verify=False)
-            if resp.status_code == 200 and len(resp.content) > 500:
-                return io.BytesIO(resp.content)
-
-        # Scrape og:image / twitter:image from HTML
-        res = requests.get(clean_url, headers=headers, timeout=15, verify=False)
-        res.encoding = 'utf-8'
-        soup = BeautifulSoup(res.text, 'html.parser')
-
-        target_img_url = None
-        meta_img = (
-            soup.find('meta', property='og:image:secure_url') or 
-            soup.find('meta', property='og:image') or 
-            soup.find('meta', attrs={'name': 'twitter:image'})
-        )
-
-        if meta_img and meta_img.get('content'):
-            target_img_url = meta_img['content']
-        else:
-            img_tag = soup.find('img')
-            if img_tag and img_tag.get('src'):
-                target_img_url = img_tag['src']
-
-        if target_img_url:
-            if not target_img_url.startswith('http'):
-                target_img_url = urllib.parse.urljoin(clean_url, target_img_url)
-
-            img_resp = requests.get(target_img_url, headers=headers, timeout=15, verify=False)
-            if img_resp.status_code == 200 and len(img_resp.content) > 500:
-                return io.BytesIO(img_resp.content)
-
-    except Exception as e:
-        print(f"URL image extraction notice: {e}")
-
-    return clean_url
-
-
 # ---------------------------------------------------------
 # 2. FULL-APP AUTHENTICATION GATEKEEPER
 # ---------------------------------------------------------
@@ -310,25 +251,34 @@ with tab_pub:
 
     st.markdown("#### 🖼️ Thumbnail Source")
     
-    transferred_thumb = st.session_state.get("story_img_path", None)
-    transferred_name = st.session_state.get("story_img_name", None)
+    # Check for in-memory bytes or disk path transferred from Resizer
+    transferred_bytes = st.session_state.get("story_img_bytes", None)
+    transferred_path = st.session_state.get("story_img_path", None)
+    transferred_name = st.session_state.get("story_img_name", "resizer_image.webp")
 
-    if transferred_thumb and os.path.exists(transferred_thumb):
-        display_name = transferred_name if transferred_name else os.path.basename(transferred_thumb)
-        
+    active_transferred_img = None
+    if transferred_bytes:
+        active_transferred_img = transferred_bytes
+    elif transferred_path and os.path.exists(transferred_path):
+        active_transferred_img = transferred_path
+
+    if active_transferred_img:
         info_c1, info_c2 = st.columns([3, 1])
         with info_c1:
-            st.success(f"✅ Active Thumbnail Loaded: `{display_name}`")
+            st.success(f"✅ Active Image Linked from Studio: `{transferred_name}`")
         with info_c2:
             if st.button("❌ Remove Active Thumbnail", width="stretch"):
-                del st.session_state["story_img_path"]
+                if "story_img_bytes" in st.session_state:
+                    del st.session_state["story_img_bytes"]
+                if "story_img_path" in st.session_state:
+                    del st.session_state["story_img_path"]
                 if "story_img_name" in st.session_state:
                     del st.session_state["story_img_name"]
                 if "pub_card_custom_prefix" in st.session_state:
                     del st.session_state["pub_card_custom_prefix"]
                 st.rerun()
                 
-        st.image(transferred_thumb, caption=f"Ready for Publishing: {display_name}", width=350)
+        st.image(active_transferred_img, caption=f"Selected Thumbnail: {transferred_name}", width=320)
 
     thumb_col1, thumb_col2 = st.columns([1, 1])
     with thumb_col1:
@@ -368,6 +318,8 @@ with tab_pub:
     with act_c1:
         if st.button("🧹 Clear All Fields", width="stretch"):
             st.session_state["pub_story_text"] = ""
+            if "story_img_bytes" in st.session_state:
+                del st.session_state["story_img_bytes"]
             if "story_img_path" in st.session_state:
                 del st.session_state["story_img_path"]
             if "story_img_name" in st.session_state:
@@ -405,13 +357,17 @@ with tab_pub:
                 raw_content = "\n\n".join(lines[2:]) if len(lines) > 2 else excerpt
                 html_content = markdown.markdown(raw_content)
 
+                # Prioritize: In-Memory Bytes -> File Path -> Local Upload -> Web URL
                 image_source = None
-                if transferred_thumb and os.path.exists(transferred_thumb):
-                    image_source = transferred_thumb
+                if transferred_bytes:
+                    image_source = io.BytesIO(transferred_bytes)
+                    setattr(image_source, "name", transferred_name)
+                elif transferred_path and os.path.exists(transferred_path):
+                    image_source = transferred_path
                 elif pub_local_img is not None:
                     image_source = pub_local_img
                 elif pub_thumb_url.strip():
-                    image_source = resolve_direct_image_source(pub_thumb_url.strip())
+                    image_source = pub_thumb_url.strip()
 
                 cat_ids = [cats_map[selected_category]] if (cats_map and selected_category in cats_map) else []
 
@@ -478,7 +434,6 @@ with tab_pub:
                     else:
                         st.error("❌ Failed to publish post to WordPress. Check credentials in Settings.")
 
-    # Render Generated Assets (Card Preview + Download + SEO Box)
     pub_card_file = st.session_state.get("latest_card_path", None)
     seo_preview_val = st.session_state.get("pub_seo_preview", "")
 
