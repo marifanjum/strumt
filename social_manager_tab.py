@@ -1,114 +1,100 @@
 import os
-import time
+import io
 import tempfile
 import urllib.parse
 from datetime import datetime
-from bs4 import BeautifulSoup
 import requests
-from image_designer import generate_custom_card
+from bs4 import BeautifulSoup
 import streamlit as st
 
-def generate_seo_metadata(text, provider, api_key, model_name="", include_youtube=True):
-    yt_instruction = "Provide a catchy YouTube Title and YouTube Keywords comma-separated on a single line." if include_youtube else ""
-    
-    if not model_name or not model_name.strip():
-        if provider == "Groq (Llama)": model_name = "groq/compound"
-        elif provider == "Google Gemini": model_name = "gemini-3.7-flash"
-        else: model_name = "gpt-5.6-sol"
-
-    prompt = f"""
-Strictly follow these rules without any introductory text, reasoning lines, bullet points, or asterisks (*):
-1. HASHTAGS: Exactly 5 trending hashtags, space-separated on a single unnumbered line.
-2. ENGLISH DESCRIPTION: A concise, catchy English description for social media on a single paragraph.
-3. {yt_instruction}
-
-Urdu Text:
-{text}
-
-Output format (use these exact labels without any extra markdown or asterisks):
-HASHTAGS:
-ENGLISH DESCRIPTION:
-YOUTUBE TITLE:
-YOUTUBE KEYWORDS:
-"""
-    try:
-        if provider == "Groq (Llama)":
-            from groq import Groq
-            client = Groq(api_key=api_key.strip())
-            res = client.chat.completions.create(
-                messages=[{"role": "user", "content": prompt}],
-                model=model_name,
-            )
-            return res.choices[0].message.content.replace("*", "").strip()
-
-        elif provider == "Google Gemini":
-            from google import genai
-            client = genai.Client(api_key=api_key.strip())
-            interaction = client.interactions.create(model=model_name, input=prompt)
-            return interaction.output_text.replace("*", "").strip()
-
-        elif provider == "OpenAI (GPT)":
-            from openai import OpenAI
-            client = OpenAI(api_key=api_key.strip())
-            res = client.chat.completions.create(
-                model=model_name,
-                messages=[{"role": "user", "content": prompt}]
-            )
-            return res.choices[0].message.content.replace("*", "").strip()
-    except Exception as e:
-        return f"❌ SEO Error: {e}"
-    return "❌ SEO Failed."
+from image_designer import generate_custom_card
+from ai_news_generator import generate_seo_metadata
 
 
-def render_social_manager_tab(app_config):
-    """Renders the Social Media Manager & SEO Studio tab inside Streamlit."""
-    
-    st.header("🌐 Social Media Manager & SEO Studio")
-    
-    # 1. Urdu Text / Headline Input
-    headline_text = st.text_area("Urdu Text / Headline:", placeholder="یہاں خبر کی سرخی درج کریں...", height=110)
-    
-    # 2. Image Source Options
-    st.markdown("🖼️ Image Source (Select File or Provide URL):")
-    col_img1, col_img2 = st.columns([2, 1])
-    
-    with col_img1:
-        img_url_input = st.text_input("Paste Direct Image URL or Story URL:", placeholder="https://...")
-    with col_img2:
-        uploaded_img_file = st.file_uploader("Upload Image File", type=["png", "jpg", "jpeg", "webp"])
+def render_social_manager_tab(config: dict):
+    """Renders the dedicated Social Media Manager & SEO Studio in Streamlit."""
+    st.markdown("### 🌐 Social Media Manager & SEO Studio")
 
-    # 3. AI Platform Selector & YouTube Checkbox Row
-    col_opt1, col_opt2 = st.columns(2)
-    with col_opt1:
-        ai_provider = st.selectbox("AI Platform:", ["Groq (Llama)", "Google Gemini", "OpenAI (GPT)"], index=0)
-    with col_opt2:
-        include_yt = st.checkbox("Generate YouTube Title & Keywords", value=True)
+    # Inject Urdu Nastaliq styling for textareas with RTL support
+    st.markdown("""
+        <style>
+            textarea[aria-label="Urdu Text / Headline:"] {
+                font-family: 'Jameel Noori Nastaleeq', 'Jameel Custom', 'Noto Nastaliq Urdu', Arial, sans-serif !important;
+                direction: rtl !important;
+                text-align: right !important;
+                font-size: 19px !important;
+                line-height: 1.8 !important;
+            }
+        </style>
+    """, unsafe_allow_html=True)
 
-    # 4. Custom Card Name Prefix Input
-    custom_card_prefix = st.text_input("🏷️ Custom Card Name Prefix (Optional):", placeholder="e.g., reel-part1, podcast-quote")
+    # 1. Headline Input
+    headline = st.text_area(
+        "Urdu Text / Headline:",
+        value=st.session_state.get("social_headline", ""),
+        height=100,
+        placeholder="یہاں خبر کی اردو سرخی یا سوشل میڈیا پوسٹ کا متن درج کریں..."
+    )
 
-    # Helper function to get credentials based on active selection
-    def get_credentials():
-        if ai_provider == "Groq (Llama)":
-            return app_config.get("groq_key", "").strip(), app_config.get("groq_model", "").strip()
-        elif ai_provider == "Google Gemini":
-            return app_config.get("gemini_key", "").strip(), app_config.get("gemini_model", "").strip()
-        else:
-            return app_config.get("openai_key", "").strip(), app_config.get("openai_model", "").strip()
+    # 2. Image Source Handling
+    st.markdown("#### 🖼️ Image Source")
+    img_col1, img_col2 = st.columns([1, 1])
 
-    # Helper function to resolve image path
-    def resolve_image():
-        if uploaded_img_file is not None:
-            temp_p = os.path.join(tempfile.gettempdir(), f"social_upload_{os.urandom(4).hex()}.png")
-            with open(temp_p, "wb") as f:
-                f.write(uploaded_img_file.getbuffer())
-            return temp_p
-            
-        if img_url_input.strip():
+    # Check for transferred image from Resizer/Collage tab
+    transferred_image = st.session_state.get("social_media_image_path", None)
+    if transferred_image and os.path.exists(transferred_image):
+        st.info(f"✅ Image received from Image Studio: `{os.path.basename(transferred_image)}`")
+        if st.button("❌ Remove Transferred Image"):
+            del st.session_state["social_media_image_path"]
+            st.rerun()
+
+    with img_col1:
+        uploaded_file = st.file_uploader(
+            "Upload Local Image:", 
+            type=["png", "jpg", "jpeg", "webp"], 
+            key="social_img_uploader"
+        )
+
+    with img_col2:
+        img_url = st.text_input(
+            "Or Paste Direct / Story URL:", 
+            placeholder="https://example.com/image.jpg"
+        )
+
+    # 3. Settings & Options Row
+    st.markdown("#### ⚙️ Card & AI Configurations")
+    opt_col1, opt_col2, opt_col3 = st.columns([1.5, 1.5, 2])
+
+    with opt_col1:
+        selected_provider = st.selectbox(
+            "AI Platform:", 
+            ["Groq (Llama)", "Google Gemini", "OpenAI (GPT)"],
+            index=["Groq (Llama)", "Google Gemini", "OpenAI (GPT)"].index(config.get("ai_provider", "Groq (Llama)"))
+        )
+
+    with opt_col2:
+        chk_youtube = st.checkbox("Generate YouTube SEO", value=True)
+
+    with opt_col3:
+        custom_prefix = st.text_input("Custom Card Prefix (Optional):", placeholder="e.g. breaking_news")
+
+    # Helper function to resolve image source
+    def resolve_image_input():
+        # Priority 1: Transferred file from resizer tab
+        if transferred_image and os.path.exists(transferred_image):
+            return transferred_image
+
+        # Priority 2: Direct browser file upload
+        if uploaded_file is not None:
+            return uploaded_file
+
+        # Priority 3: Web URL scraping
+        if img_url and img_url.strip():
+            clean_url = img_url.strip()
+            target_url = clean_url
             try:
-                target_url = img_url_input.strip()
-                if not target_url.lower().endswith(('png', 'jpg', 'jpeg', 'webp', 'gif')):
-                    res = requests.get(target_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=10, verify=False)
+                if not clean_url.lower().split('?')[0].endswith(('png', 'jpg', 'jpeg', 'webp', 'gif')):
+                    res = requests.get(clean_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=10, verify=False)
                     soup = BeautifulSoup(res.text, 'html.parser')
                     meta_img = soup.find('meta', property='og:image') or soup.find('meta', attrs={'name': 'twitter:image'})
                     if meta_img and meta_img.get('content'):
@@ -118,122 +104,118 @@ def render_social_manager_tab(app_config):
                         if img_tag and img_tag.get('src'):
                             target_url = img_tag['src']
                     if not target_url.startswith('http'):
-                        target_url = urllib.parse.urljoin(img_url_input, target_url)
+                        target_url = urllib.parse.urljoin(clean_url, target_url)
 
-                img_resp = requests.get(target_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=12, verify=False)
-                if img_resp.status_code == 200:
-                    temp_p = os.path.join(tempfile.gettempdir(), "social_manager_thumb.jpg")
-                    with open(temp_p, 'wb') as f:
-                        f.write(img_resp.content)
-                    return temp_p
+                img_resp = requests.get(target_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=15, verify=False)
+                if img_resp.status_code == 200 and len(img_resp.content) > 500:
+                    return io.BytesIO(img_resp.content)
             except Exception as e:
-                st.error(f"Image fetch error: {e}")
+                st.warning(f"⚠️ Could not scrape image URL: {e}")
+
         return None
 
-    # 5. Action Buttons Row
+    # Helper to resolve API keys based on selection
+    def get_credentials(provider):
+        if provider == "Groq (Llama)":
+            return config.get("groq_key", ""), config.get("groq_model", "llama-3.3-70b-versatile")
+        elif provider == "Google Gemini":
+            return config.get("gemini_key", ""), config.get("gemini_model", "gemini-2.5-flash")
+        else:
+            return config.get("openai_key", ""), config.get("openai_model", "gpt-4o")
+
+    # 4. Action Buttons
     st.markdown("---")
     btn_col1, btn_col2, btn_col3 = st.columns(3)
-    
-    # We maintain states for outputs using Streamlit session state
-    if "social_output_card" not in st.session_state:
-        st.session_state["social_output_card"] = None
-    if "social_output_seo" not in st.session_state:
-        st.session_state["social_output_seo"] = ""
+
+    do_card = False
+    do_seo = False
 
     with btn_col1:
         if st.button("✨ Generate Only Card", use_container_width=True):
-            if not headline_text.strip():
-                st.warning("Please enter Urdu text for the card!")
-            else:
-                with st.spinner("Generating social card..."):
-                    output_dir = app_config.get("output_dir", tempfile.gettempdir())
-                    os.makedirs(output_dir, exist_ok=True)
-                    
-                    default_base = f"news_card_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
-                    safe_prefix = "".join([c if c.isalnum() or c in "-_" else "_" for c in custom_card_prefix])
-                    final_filename = f"{safe_prefix}_{default_base}" if safe_prefix else default_base
-                    card_file = os.path.join(output_dir, final_filename)
-
-                    try:
-                        img_p = resolve_image()
-                        generate_custom_card(
-                            headline_text=headline_text,
-                            news_img_path=img_p,
-                            template_path=app_config.get("template_path", "ummat_frame.png"),
-                            output_path=card_file
-                        )
-                        st.session_state["social_output_card"] = card_file
-                        st.success("Social card generated successfully!")
-                    except Exception as e:
-                        st.error(f"Card generation failed: {e}")
+            do_card = True
 
     with btn_col2:
-        if st.button("🚀 Generate Card & SEO", use_container_width=True):
-            if not headline_text.strip():
-                st.warning("Please enter text!")
-            else:
-                # Run card generation
-                with st.spinner("Generating card and AI SEO..."):
-                    output_dir = app_config.get("output_dir", tempfile.gettempdir())
-                    os.makedirs(output_dir, exist_ok=True)
-                    default_base = f"news_card_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
-                    safe_prefix = "".join([c if c.isalnum() or c in "-_" else "_" for c in custom_card_prefix])
-                    final_filename = f"{safe_prefix}_{default_base}" if safe_prefix else default_base
-                    card_file = os.path.join(output_dir, final_filename)
-
-                    try:
-                        img_p = resolve_image()
-                        generate_custom_card(
-                            headline_text=headline_text,
-                            news_img_path=img_p,
-                            template_path=app_config.get("template_path", "ummat_frame.png"),
-                            output_path=card_file
-                        )
-                        st.session_state["social_output_card"] = card_file
-                    except Exception as e:
-                        st.error(f"Card failed: {e}")
-
-                    # Run SEO generation
-                    key, model = get_credentials()
-                    if not key:
-                        st.error(f"API Key for {ai_provider} is missing!")
-                    else:
-                        seo_res = generate_seo_metadata(headline_text, ai_provider, key, model, include_yt)
-                        st.session_state["social_output_seo"] = seo_res
-                        st.success("Card & SEO metadata generated!")
+        if st.button("🚀 Generate Card & SEO", type="primary", use_container_width=True):
+            do_card = True
+            do_seo = True
 
     with btn_col3:
         if st.button("🔍 Generate Only SEO", use_container_width=True):
-            if not headline_text.strip():
-                st.warning("Please enter Urdu text to generate SEO!")
+            do_seo = True
+
+    # Execution Handlers
+    card_width = int(config.get("card_width", 1080))
+    card_height = int(config.get("card_height", 1350))
+
+    if do_card:
+        if not headline.strip():
+            st.error("❌ Please provide an Urdu headline first.")
+        else:
+            with st.spinner("🎨 Rendering social media card via Playwright..."):
+                resolved_img = resolve_image_input()
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                prefix = f"{custom_prefix.strip()}_" if custom_prefix.strip() else ""
+                card_filename = f"{prefix}news_card_{timestamp}.png"
+                
+                output_dir = config.get("output_dir", os.path.join(os.path.expanduser("~"), "Downloads"))
+                os.makedirs(output_dir, exist_ok=True)
+                target_card_path = os.path.join(output_dir, card_filename)
+
+                try:
+                    generated_card = generate_custom_card(
+                        headline_text=headline.strip(),
+                        news_img_path=resolved_img,
+                        template_path="ummat_frame.png",
+                        output_path=target_card_path,
+                        card_width=card_width,
+                        card_height=card_height
+                    )
+                    st.session_state["latest_card_path"] = generated_card
+                    st.success(f"✅ Card generated successfully: `{card_filename}`")
+                except Exception as e:
+                    st.error(f"❌ Failed to generate card: {e}")
+
+    if do_seo:
+        if not headline.strip():
+            st.error("❌ Please provide an Urdu headline first.")
+        else:
+            api_key, model_name = get_credentials(selected_provider)
+            if not api_key:
+                st.error(f"❌ Missing API Key for {selected_provider}. Please configure it in Settings.")
             else:
-                key, model = get_credentials()
-                if not key:
-                    st.error(f"API Key for {ai_provider} is missing!")
-                else:
-                    with st.spinner(f"Generating SEO metadata via {ai_provider}..."):
-                        seo_res = generate_seo_metadata(headline_text, ai_provider, key, model, include_yt)
-                        st.session_state["social_output_seo"] = seo_res
-                        st.success("SEO metadata generated successfully!")
+                with st.spinner(f"🤖 Generating SEO & Hashtags via {selected_provider}..."):
+                    seo_text = generate_seo_metadata(
+                        headline=headline.strip(),
+                        provider=selected_provider,
+                        api_key=api_key,
+                        model_name=model_name,
+                        include_youtube=chk_youtube
+                    )
+                    st.session_state["latest_seo_output"] = seo_text
 
-    # Display Generated Card Preview & Download if available
-    if st.session_state["social_output_card"] and os.path.exists(st.session_state["social_output_card"]):
-        st.image(st.session_state["social_output_card"], caption="Generated Social Card Preview")
-        with open(st.session_state["social_output_card"], "rb") as cf:
-            st.download_button("📥 Download Generated Card", cf, file_name=os.path.basename(st.session_state["social_output_card"]), mime="image/png")
+    # 5. Output Previews
+    res_col1, res_col2 = st.columns([1, 1])
 
-    # 6. SEO Output Box Display (Forced via Session State Key binding)
-    st.markdown("📊 **AI SEO & Social Media Output:**")
-    
-    # Initialize session state for the text area if it doesn't exist
-    if "seo_display_box" not in st.session_state:
-        st.session_state["seo_display_box"] = st.session_state.get("social_output_seo", "")
-    else:
-        # Update the widget's active state value whenever new AI text is generated
-        st.session_state["seo_display_box"] = st.session_state.get("social_output_seo", "")
+    with res_col1:
+        st.markdown("#### 🖼️ Social Card Output")
+        latest_card = st.session_state.get("latest_card_path", None)
+        if latest_card and os.path.exists(latest_card):
+            st.image(latest_card, caption="Generated Social Media Card", use_container_width=True)
+            with open(latest_card, "rb") as f:
+                st.download_button(
+                    label="💾 Download Card Image",
+                    data=f.read(),
+                    file_name=os.path.basename(latest_card),
+                    mime="image/png",
+                    use_container_width=True
+                )
+        else:
+            st.info("No card generated yet. Click 'Generate Only Card' or 'Generate Card & SEO' above.")
 
-    st.text_area(
-        "SEO Metadata Result", 
-        height=130, 
-        key="seo_display_box"
-    )
+    with res_col2:
+        st.markdown("#### 📊 SEO & Social Metadata")
+        latest_seo = st.session_state.get("latest_seo_output", "")
+        if latest_seo:
+            st.text_area("Generated Metadata:", value=latest_seo, height=320)
+        else:
+            st.info("SEO metadata will appear here after generation.")
