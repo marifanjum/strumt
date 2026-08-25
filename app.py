@@ -95,6 +95,21 @@ def load_master_config() -> dict:
         "card_width": 1080,
         "card_height": 1350
     }
+
+    # 1. Load from Streamlit Cloud Secrets (st.secrets) if configured
+    try:
+        if hasattr(st, "secrets"):
+            for key in default_config.keys():
+                if key in st.secrets:
+                    val = st.secrets[key]
+                    if key in ["resizer_width", "resizer_height", "card_width", "card_height"]:
+                        default_config[key] = int(val)
+                    else:
+                        default_config[key] = str(val)
+    except Exception as e:
+        print(f"⚠️ Notice reading st.secrets: {e}")
+
+    # 2. Check config.encrypted as secondary local storage
     config_file = "config.encrypted"
     if os.path.exists(config_file):
         try:
@@ -103,9 +118,10 @@ def load_master_config() -> dict:
                 encrypted_data = f.read()
             decrypted_data = cipher.decrypt(encrypted_data)
             loaded_data = json.loads(decrypted_data.decode('utf-8'))
-            default_config.update(loaded_data)
+            default_config.update({k: v for k, v in loaded_data.items() if v})
         except Exception as e:
-            print(f"⚠️ Notice reading config: {e}")
+            print(f"⚠️ Notice reading config.encrypted: {e}")
+
     return default_config
 
 
