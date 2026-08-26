@@ -433,23 +433,27 @@ def render_image_resizer_tab(config: dict):
 
         base_img = None
         if single_file:
-            # Check if an AI enhanced version exists in session state
+            raw_original = Image.open(single_file)
+            
             if st.session_state.get("ai_enhanced_image") is not None:
                 base_img = st.session_state["ai_enhanced_image"]
             else:
-                base_img = Image.open(single_file)
+                base_img = raw_original
 
             with in_col2:
                 st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
-                if st.button("⚡ Improve Quality (AI Denoise & 2x)", type="secondary", width="stretch"):
-                    with st.spinner("🧠 Enhancing details with Real-ESRGAN..."):
-                        raw_pil = Image.open(single_file)
-                        enhanced_res = upscale_image_cpu(raw_pil, scale=2)
+                if st.button("⚡ Restore HD Quality (AI 4x)", type="secondary", width="stretch"):
+                    with st.spinner(f"🧠 Reconstructing {raw_original.width}x{raw_original.height} into HD scale..."):
+                        enhanced_res = upscale_image_cpu(
+                            raw_original, 
+                            target_min_w=canvas_w, 
+                            target_min_h=canvas_h
+                        )
                         st.session_state["ai_enhanced_image"] = enhanced_res
                         st.rerun()
 
                 if st.session_state.get("ai_enhanced_image") is not None:
-                    st.success(f"✨ AI Enhanced Active ({base_img.width}x{base_img.height}px)")
+                    st.success(f"✨ HD Active: **{base_img.width}x{base_img.height}px** (Source: {raw_original.width}x{raw_original.height}px)")
                     if st.button("↺ Reset to Original", width="stretch"):
                         st.session_state["ai_enhanced_image"] = None
                         st.rerun()
