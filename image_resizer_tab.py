@@ -422,7 +422,7 @@ def render_image_resizer_tab(config: dict):
     loaded_images = []
 
     if mode == "Single Image Mode":
-        in_col1, in_col2 = st.columns([2.8, 1.2])
+        in_col1, in_col2 = st.columns([2.6, 1.4])
         with in_col1:
             single_file = st.file_uploader(
                 "Upload Image:", 
@@ -433,6 +433,7 @@ def render_image_resizer_tab(config: dict):
 
         base_img = None
         if single_file:
+            # Check if an AI enhanced version exists in session state
             if st.session_state.get("ai_enhanced_image") is not None:
                 base_img = st.session_state["ai_enhanced_image"]
             else:
@@ -443,11 +444,12 @@ def render_image_resizer_tab(config: dict):
                 if st.button("⚡ Improve Quality (AI Denoise & 2x)", type="secondary", width="stretch"):
                     with st.spinner("🧠 Enhancing details with Real-ESRGAN..."):
                         raw_pil = Image.open(single_file)
-                        st.session_state["ai_enhanced_image"] = upscale_image_cpu(raw_pil, scale=2)
+                        enhanced_res = upscale_image_cpu(raw_pil, scale=2)
+                        st.session_state["ai_enhanced_image"] = enhanced_res
                         st.rerun()
 
                 if st.session_state.get("ai_enhanced_image") is not None:
-                    st.caption(f"✨ AI Enhanced: {base_img.width}x{base_img.height}px")
+                    st.success(f"✨ AI Enhanced Active ({base_img.width}x{base_img.height}px)")
                     if st.button("↺ Reset to Original", width="stretch"):
                         st.session_state["ai_enhanced_image"] = None
                         st.rerun()
