@@ -4,6 +4,7 @@ import urllib.parse
 import requests
 from bs4 import BeautifulSoup
 
+
 def correct_urdu_orthography(text: str) -> str:
     """
     Standardizes and corrects common Urdu typing errors, misspellings,
@@ -83,14 +84,14 @@ def correct_urdu_orthography(text: str) -> str:
 
 def fetch_tweet_details(tweet_url: str) -> dict:
     """
-    Fetches FULL untruncated tweet text, author name, and screen name via direct JSON proxy APIs.
+    Fetches full untruncated tweet text, author name, and screen name via direct JSON proxy APIs.
     """
     clean_url = tweet_url.strip().split('?')[0]
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     }
 
-    # Strategy 1: FxTwitter JSON API (Full untruncated post)
+    # 1. FxTwitter API
     try:
         api_url = re.sub(r'https?://(www\.)?(twitter|x)\.com', 'https://api.fxtwitter.com', clean_url)
         resp = requests.get(api_url, headers=headers, timeout=12)
@@ -113,9 +114,9 @@ def fetch_tweet_details(tweet_url: str) -> dict:
                     "url": clean_url
                 }
     except Exception as e:
-        print(f"FxTwitter fetch note: {e}")
+        print(f"FxTwitter note: {e}")
 
-    # Strategy 2: VxTwitter JSON API Fallback
+    # 2. VxTwitter API Fallback
     try:
         vx_url = re.sub(r'https?://(www\.)?(twitter|x)\.com', 'https://api.vxtwitter.com', clean_url)
         resp = requests.get(vx_url, headers=headers, timeout=12)
@@ -130,9 +131,9 @@ def fetch_tweet_details(tweet_url: str) -> dict:
                     "url": clean_url
                 }
     except Exception as e:
-        print(f"VxTwitter fetch note: {e}")
+        print(f"VxTwitter note: {e}")
 
-    # Strategy 3: Official oEmbed API Fallback
+    # 3. oEmbed Fallback
     try:
         oembed_endpoint = f"https://publish.twitter.com/oembed?url={urllib.parse.quote(clean_url)}&omit_script=true"
         resp = requests.get(oembed_endpoint, headers=headers, timeout=10)
@@ -153,16 +154,13 @@ def fetch_tweet_details(tweet_url: str) -> dict:
                 "url": clean_url
             }
     except Exception as e:
-        print(f"oEmbed fetch note: {e}")
+        print(f"oEmbed note: {e}")
 
     return None
 
 
 def extract_text_from_url(url: str) -> str:
-    """
-    Natively extracts article text using requests first, 
-    falling back to headless Chromium (Playwright) if blocked.
-    """
+    """Natively scrapes article body text using requests and Playwright fallback."""
     clean_url = url.strip()
     desktop_headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
@@ -170,15 +168,13 @@ def extract_text_from_url(url: str) -> str:
         'Accept-Language': 'en-US,en;q=0.9,ur;q=0.8'
     }
 
-    # 1. Fast Path: Direct HTTP Request
     try:
         res = requests.get(clean_url, headers=desktop_headers, timeout=10, verify=False)
-        if res.status_code == 200 and len(res.text) > 1000:
+        if res.status_code == 200 and len(res.text) > 800:
             soup = BeautifulSoup(res.text, 'html.parser')
             for tag in soup(['script', 'style', 'nav', 'header', 'footer', 'aside', 'form', 'noscript']):
                 tag.decompose()
 
-            # Target article container or standard paragraphs
             article_elem = soup.find('article') or soup.find('div', class_=re.compile(r'content|post|story|entry|detail', re.I))
             p_tags = article_elem.find_all('p') if article_elem else soup.find_all('p')
             paragraphs = [p.get_text().strip() for p in p_tags if len(p.get_text().strip()) > 35]
@@ -188,60 +184,44 @@ def extract_text_from_url(url: str) -> str:
     except Exception:
         pass
 
-    # 2. Native Browser Path: Headless Playwright Chromium
     try:
         from playwright.sync_api import sync_playwright
         with sync_playwright() as p:
-            browser = p.chromium.launch(
-                headless=True,
-                args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]
-            )
-            context = browser.new_context(user_agent=desktop_headers['User-Agent'])
-            page = context.new_page()
+            browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
+            page = browser.new_page(user_agent=desktop_headers['User-Agent'])
             page.goto(clean_url, timeout=15000, wait_until="domcontentloaded")
-            
-            # Extract main text from paragraphs directly via browser DOM
             paragraphs = page.eval_on_selector_all(
                 "article p, .post-content p, .story-body p, main p, p",
-                """elements => elements
-                    .map(el => el.innerText.trim())
-                    .filter(txt => txt.length > 35)"""
+                "elements => elements.map(el => el.innerText.trim()).filter(txt => txt.length > 35)"
             )
             browser.close()
-
             if paragraphs:
                 return f"ماخوذ شدہ اصل خبر:\n" + "\n\n".join(paragraphs[:20])
     except Exception as e:
-        print(f"Native browser scraping error: {e}")
+        print(f"Playwright error: {e}")
 
     return ""
 
 
-def preprocess_input_text(raw_input: str) -> tuple[str, list]:
-    """
-    Extracts live content for both general webpage URLs and X/Twitter URLs.
-    Returns processed background text and any found tweet metadata.
-    """
+def preprocess_input_text(raw_input: str) -> str:
+    """Extracts content for both webpage URLs and X/Twitter URLs."""
     url_pattern = r'(https?://[^\s]+)'
     urls = re.findall(url_pattern, raw_input)
 
     extracted_notes = []
-    tweets_data = []
-
     for u in urls:
         if "twitter.com" in u.lower() or "x.com" in u.lower():
             t_data = fetch_tweet_details(u)
             if t_data and t_data.get("text"):
-                tweets_data.append(t_data)
                 extracted_notes.append(
                     f"--- ٹویٹ کی مکمل تفصیلات ({u}) ---\n"
-                    f"صارف کا اصل نام (Display Name): {t_data['author_name']}\n"
+                    f"صارف کا نام (Display Name): {t_data['author_name']}\n"
                     f"صارف کا ہینڈل (Handle): {t_data['handle']}\n"
                     f"ٹویٹ کا اصل مکمل متن (Full Untruncated Text):\n{t_data['text']}\n"
                     f"ٹویٹ لنک: {t_data['url']}"
                 )
             else:
-                extracted_notes.append(f"⚠️ نوٹ: ٹویٹ کا لنک ({u}) دیا گیا تھا مگر اس کا متن حاصل نہ ہو سکا۔")
+                extracted_notes.append(f"⚠️ نوٹ: ٹویٹ کا لنک ({u}) دیا گیا تھا مگر مکمل متن حاصل نہ ہو سکا۔")
         else:
             scraped_content = extract_text_from_url(u)
             if scraped_content.strip():
@@ -251,15 +231,16 @@ def preprocess_input_text(raw_input: str) -> tuple[str, list]:
     if extracted_notes:
         combined_input += "\n\n" + "\n\n".join(extracted_notes)
 
-    return combined_input, tweets_data
+    return combined_input
 
 
 def generate_ai_news(input_text: str, provider: str = "Groq (Llama)", api_key: str = "", model_name: str = "") -> str:
     """
-    Generates verified, factual Urdu news articles with strict orthography and spelling correction.
+    Generates verified, factual Urdu news articles adhering strictly to
+    the 3-line format compatible with Direct Publisher.
     """
     if not api_key or not api_key.strip():
-        return f"❌ Error: API key for {provider} is missing. Please configure it in the Branding & Settings tab."
+        return f"❌ Error: API key for {provider} is missing. Please configure it in the Settings tab."
 
     if not model_name or not model_name.strip():
         if provider == "Groq (Llama)":
@@ -269,40 +250,38 @@ def generate_ai_news(input_text: str, provider: str = "Groq (Llama)", api_key: s
         else:
             model_name = "gpt-4o"
 
-    augmented_input, _ = preprocess_input_text(input_text)
+    augmented_input = preprocess_input_text(input_text)
 
     prompt = f"""
 آپ روزنامہ امت کے ایک انتہائی تجربہ کار، ذمہ دار اور سینئر نیوز ایڈیٹر ہیں۔
 نیچے دیے گئے ماخوذ شدہ مواد، ٹویٹس، اور حقائق کو بنیاد بنا کر ایک پیشہ ورانہ، مستند، املا کی غلطیوں سے پاک اور شستہ اردو خبر تحریر کریں۔
 
-سخت ادارتی و لسانی ہدایات (Editorial & Orthography Rules):
+سخت ادارتی ہدایات (Editorial Rules):
 
-۱. اردو املا و صحتِ الفاظ کی تصحیح (Spelling & Orthography Rules):
-- اصل مواد یا ٹویٹس میں موجود املا کی تمام عام غلطیوں کو لازماً درست کریں:
-  * "کوئ" کو درست کر کے "کوئی" لکھیں۔
-  * "کاروائ" کو درست کر کے "کارروائی" لکھیں۔
-  * "ماوں" کو درست کر کے "ماؤں" لکھیں۔
+۱. اردو املا و صحتِ الفاظ کی تصحیح (Orthography Rules):
+- اصل مواد میں موجود املا کی غلطیوں کو درست کریں:
+  * "کوئ" کو "کوئی" لکھیں۔
+  * "کاروائ" کو "کارروائی" لکھیں۔
+  * "ماوں" کو "ماؤں" لکھیں۔
   * "انتہائ" کو "انتہائی" اور "ابتدائ" کو "ابتدائی" لکھیں۔
-  * دو چشمی ھ اور گول ہ کے درست استعمال کا سختی سے خیال رکھیں: مثلاً "آھستہ" کو "آہستہ"، "چاھئے/چاھیے" کو "چاہیے"، "ھم" کو "ہم"، "ھمارا" کو "ہمارا"، "ھوگا" کو "ہوگا"، "شھید" کو "شہید"، "شھر" کو "شہر" اور "وجھ" کو "وجہ" لکھیں۔ (دو چشمی ھ صرف مخلوط حروف جیسے بھ، پھ، تھ، ٹھ، جھ وغیرہ کے لیے مخصوص رہے گی)۔
+  * دو چشمی ھ اور گول ہ کا درست استعمال کریں: مثلاً "آھستہ" کو "آہستہ"، "چاھئے" کو "چاہیے"، "ھم" کو "ہم"، "ھمارا" کو "ہمارا"، "ھوگا" کو "ہوگا"، "شھید" کو "شہید"، "شھر" کو "شہر" اور "وجھ" کو "وجہ" لکھیں۔
 
-۲. سرخی اور لے آؤٹ کا اصول:
-- اگر فراہم کردہ مواد کے آغاز میں کوئی سرخی دی گئی ہو، تو اسے ہی بعینہٖ سرخی (TITLE) کے طور پر استعمال کریں اور خبر کا پورا متن اسی سرخی کے تناظر میں تحریر کریں۔
-- اگر سرخی نہ دی گئی ہو تو مواد کے مطابق ایک جامع، جاندار اور معیاری سرخی (10 سے 12 الفاظ) خود بنائیں۔
-- جواب کا فارمیٹ صرف اور صرف یہ ۳ حصے ہوں:
+۲. سرخی اور جواب کا ڈھانچہ (Exact Output Structure):
+- اگر فراہم کردہ مواد کے آغاز میں کوئی سرخی دی گئی ہو، تو اسے ہی بعینہٖ سرخی کے طور پر استعمال کریں اور خبر کا پورا متن اسی سرخی کے تناظر میں تحریر کریں۔
+- جواب کا فارمیٹ بلاناغہ صرف اور صرف یہ ۳ لائنیں ہوں (کوئی اضافی لیبل، ستارے یا مارک ڈاؤن نہ لگائیں):
 TITLE: [اردو سرخی]
 EXCERPT: [تقریباً 10 سے 14 الفاظ کا مکمل خلاصہ یا ذیلی سرخی]
 CONTENT: [خبر کا مکمل متن۔ خبر میں کوئی بلٹ پوائنٹس، ستارے (*)، یا ڈیش ہرگز استعمال نہ کریں۔]
 
 ۳. اعداد و شمار (Numbers Rule):
 - تمام اعداد کو ہمیشہ ہندسوں (Digits) میں لکھیں (مثلاً 2، 3، 10، 50، 100، 2026 وغیرہ)۔
-- صرف اور صرف عدد 1 کے لیے لفظ "ایک" استعمال کریں۔ باقی تمام اعداد لازماً ہندسوں میں ہونے چاہئیں۔
+- صرف اور صرف عدد 1 کے لیے لفظ "ایک" استعمال کریں۔ باقی تمام اعداد لازماً ہندسوں میں ہوں۔
 
-۴. ایکس (Twitter/X) کے بیانات اور ٹویٹس کا اصول (Urdu Script & Verbatim Translation):
+۴. ایکس (Twitter/X) کے بیانات اور ٹویٹس کا اصول:
 - صارف کا نام لازماً اردو رسم الخط میں لکھیں (مثلاً: Ch Fawad Hussain کو "چوہدری فواد حسین")، اور اس کے بعد اس کا اصل یوزر ہینڈل انگریزی میں بریکٹ میں درج کریں (مثلاً: سوشل میڈیا پلیٹ فارم ایکس پر اپنے بیان میں معروف رہنما چوہدری فواد حسین (@fawadchaudhry) نے کہا کہ...)۔
-- اگر ٹویٹ انگریزی یا کسی دوسری زبان میں ہو، تو اس کا مکمل اور شستہ اردو میں لفظ بہ لفظ (Verbatim) ترجمہ کریں، خلاصہ نہ کریں۔
-- اگر ٹویٹ اردو میں ہو، تو املا کی تصحیح کے ساتھ اس کا مکمل متن ہو بہو نقل کریں۔
-- ٹویٹ کے متن کے گرد واوین یا کوٹیشن مارکس ("..." یا ”...“) ہرگز نہ لگائیں۔
-- اگر ٹویٹ میں کوئی گالی گلوچ یا غیر شائستہ الفاظ ہوں تو صرف ان الفاظ کو حذف کریں۔
+- اگر ٹویٹ انگریزی یا کسی دوسری زبان میں ہو، تو اس کا مکمل اور شستہ اردو میں لفظ بہ لفظ (Verbatim) ترجمہ کریں، خلاصہ ہرگز نہ کریں۔
+- ٹویٹ کے متن کے گرد کوٹیشن مارکس ("..." یا ”...“) نہ لگائیں۔
+- اگر ٹویٹ میں کوئی گالی گلوچ ہو تو صرف اس لفظ کو حذف کریں۔
 - ٹویٹ کا پیراگراف مکمل ہونے کے فوری بعد، اگلی لائن پر ایک بالکل الگ اور آزاد پیراگراف (Separate Paragraph) کے طور پر اس ٹویٹ کا اصل URL تنہا درج کریں۔
 
 ۵. حقائق اور معروضیت:
@@ -342,21 +321,26 @@ CONTENT: [خبر کا مکمل متن۔ خبر میں کوئی بلٹ پوائن
             raw_result = res.choices[0].message.content
 
         cleaned = re.sub(r'[*_`]', '', raw_result).strip()
-        final_output = correct_urdu_orthography(cleaned)
-        return final_output
+        corrected = correct_urdu_orthography(cleaned)
+
+        # Standardize prefix tags so app.py replace logic works cleanly
+        if not re.search(r'TITLE:', corrected, re.IGNORECASE):
+            lines = [l.strip() for l in corrected.splitlines() if l.strip()]
+            if len(lines) >= 2:
+                title = lines[0]
+                excerpt = lines[1]
+                content = "\n\n".join(lines[2:]) if len(lines) > 2 else excerpt
+                return f"TITLE: {title}\nEXCERPT: {excerpt}\nCONTENT: {content}"
+
+        return corrected
 
     except Exception as e:
         print(f"❌ AI Execution Error ({provider}): {e}")
         return f"❌ AI Error ({provider}): {e}"
 
-    return f"❌ AI generation failed for {provider}."
-
 
 def parse_ai_news_response(raw_text: str) -> dict:
-    """
-    Parses the TITLE, EXCERPT, and CONTENT from the AI output string.
-    Returns a clean dictionary for Streamlit session state and text input fields.
-    """
+    """Parses TITLE, EXCERPT, and CONTENT from AI output string."""
     title_match = re.search(r'TITLE:\s*(.*?)(?=\nEXCERPT:|\nCONTENT:|$)', raw_text, re.DOTALL | re.IGNORECASE)
     excerpt_match = re.search(r'EXCERPT:\s*(.*?)(?=\nCONTENT:|$)', raw_text, re.DOTALL | re.IGNORECASE)
     content_match = re.search(r'CONTENT:\s*(.*)', raw_text, re.DOTALL | re.IGNORECASE)
@@ -365,7 +349,6 @@ def parse_ai_news_response(raw_text: str) -> dict:
     excerpt = excerpt_match.group(1).strip() if excerpt_match else ""
     content = content_match.group(1).strip() if content_match else ""
 
-    # Fallback if tags were stripped or altered
     if not title and not excerpt and not content and raw_text:
         lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
         title = lines[0] if len(lines) > 0 else ""
