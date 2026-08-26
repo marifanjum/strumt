@@ -4,7 +4,6 @@ import urllib.parse
 import requests
 from bs4 import BeautifulSoup
 
-
 def correct_urdu_orthography(text: str) -> str:
     """
     Standardizes and corrects common Urdu typing errors, misspellings,
@@ -160,38 +159,62 @@ def fetch_tweet_details(tweet_url: str) -> dict:
 
 
 def extract_text_from_url(url: str) -> str:
-    """Scrapes main story text, headline, and meta descriptions from a general news webpage."""
+    """
+    Natively extracts article text using requests first, 
+    falling back to headless Chromium (Playwright) if blocked.
+    """
+    clean_url = url.strip()
+    desktop_headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9,ur;q=0.8'
+    }
+
+    # 1. Fast Path: Direct HTTP Request
     try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        }
-        res = requests.get(url.strip(), headers=headers, timeout=15, verify=False)
-        res.encoding = res.apparent_encoding or 'utf-8'
+        res = requests.get(clean_url, headers=desktop_headers, timeout=10, verify=False)
+        if res.status_code == 200 and len(res.text) > 1000:
+            soup = BeautifulSoup(res.text, 'html.parser')
+            for tag in soup(['script', 'style', 'nav', 'header', 'footer', 'aside', 'form', 'noscript']):
+                tag.decompose()
 
-        soup = BeautifulSoup(res.text, 'html.parser')
+            # Target article container or standard paragraphs
+            article_elem = soup.find('article') or soup.find('div', class_=re.compile(r'content|post|story|entry|detail', re.I))
+            p_tags = article_elem.find_all('p') if article_elem else soup.find_all('p')
+            paragraphs = [p.get_text().strip() for p in p_tags if len(p.get_text().strip()) > 35]
 
-        for tag in soup(['script', 'style', 'nav', 'header', 'footer', 'aside', 'form', 'noscript']):
-            tag.decompose()
+            if len(paragraphs) >= 2:
+                return f"ماخوذ شدہ اصل خبر:\n" + "\n\n".join(paragraphs[:20])
+    except Exception:
+        pass
 
-        title = ""
-        title_tag = soup.find('h1') or soup.find('meta', property='og:title') or soup.find('title')
-        if title_tag:
-            title = title_tag.get('content') if title_tag.name == 'meta' else title_tag.get_text().strip()
+    # 2. Native Browser Path: Headless Playwright Chromium
+    try:
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as p:
+            browser = p.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]
+            )
+            context = browser.new_context(user_agent=desktop_headers['User-Agent'])
+            page = context.new_page()
+            page.goto(clean_url, timeout=15000, wait_until="domcontentloaded")
+            
+            # Extract main text from paragraphs directly via browser DOM
+            paragraphs = page.eval_on_selector_all(
+                "article p, .post-content p, .story-body p, main p, p",
+                """elements => elements
+                    .map(el => el.innerText.trim())
+                    .filter(txt => txt.length > 35)"""
+            )
+            browser.close()
 
-        paragraphs = []
-        article_elem = soup.find('article') or soup.find('div', class_=re.compile(r'content|post|story|entry|detail', re.I))
-        p_tags = article_elem.find_all('p') if article_elem else soup.find_all('p')
-
-        for p in p_tags:
-            txt = p.get_text().strip()
-            if len(txt) > 35 and not re.search(r'(cookie|privacy policy|subscribe|rights reserved|advertisement)', txt, re.I):
-                paragraphs.append(txt)
-
-        extracted_body = "\n\n".join(paragraphs[:15])
-        return f"Webpage Title: {title}\n\nWebpage Article Body:\n{extracted_body}"
+            if paragraphs:
+                return f"ماخوذ شدہ اصل خبر:\n" + "\n\n".join(paragraphs[:20])
     except Exception as e:
-        print(f"Webpage extraction note: {e}")
-        return ""
+        print(f"Native browser scraping error: {e}")
+
+    return ""
 
 
 def preprocess_input_text(raw_input: str) -> tuple[str, list]:
