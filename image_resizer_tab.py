@@ -4,8 +4,29 @@ import math
 import re
 import tempfile
 from datetime import datetime
-from PIL import Image, ImageDraw, ImageFont, ImageOps
+from PIL import Image, ImageDraw, ImageFont, ImageEnhance
 import streamlit as st
+from ai_upscaler import upscale_image_cpu
+
+
+def apply_image_enhancements(
+    img: Image.Image,
+    brightness: float = 1.0,
+    contrast: float = 1.0,
+    sharpness: float = 1.0,
+    color: float = 1.0
+) -> Image.Image:
+    """Applies quality, lighting, and color adjustments using Pillow ImageEnhance."""
+    enhanced = img
+    if brightness != 1.0:
+        enhanced = ImageEnhance.Brightness(enhanced).enhance(brightness)
+    if contrast != 1.0:
+        enhanced = ImageEnhance.Contrast(enhanced).enhance(contrast)
+    if color != 1.0:
+        enhanced = ImageEnhance.Color(enhanced).enhance(color)
+    if sharpness != 1.0:
+        enhanced = ImageEnhance.Sharpness(enhanced).enhance(sharpness)
+    return enhanced
 
 
 def create_gradient(width: int, height: int, c1_hex: str, c2_hex: str, direction: str) -> Image.Image:
@@ -45,17 +66,14 @@ def create_gradient(width: int, height: int, c1_hex: str, c2_hex: str, direction
 
 def compute_collage_slots(W: int, H: int, count: int, layout: str) -> list:
     slots = []
-
     if layout == "Row":
         w = math.floor(W / count)
         for i in range(count):
             slots.append((i * w, 0, w, H))
-
     elif layout == "Column":
         h = math.floor(H / count)
         for i in range(count):
             slots.append((0, i * h, W, h))
-
     elif layout == "Grid — Equal (4:3 ratio)":
         if count <= 3:
             rows, cols = 1, count
@@ -65,14 +83,6 @@ def compute_collage_slots(W: int, H: int, count: int, layout: str) -> list:
             rows, cols = 2, 3
         elif count <= 8:
             rows, cols = 2, 4
-        elif count <= 10:
-            rows, cols = 2, 5
-        elif count <= 12:
-            rows, cols = 2, 6
-        elif count <= 14:
-            rows, cols = 2, 7
-        elif count <= 16:
-            rows, cols = 2, 8
         else:
             cols = math.ceil(math.sqrt(count * (4 / 3)))
             rows = math.ceil(count / cols)
@@ -85,141 +95,6 @@ def compute_collage_slots(W: int, H: int, count: int, layout: str) -> list:
                 if idx < count:
                     slots.append((c * cell_w, r * cell_h, cell_w, cell_h))
                     idx += 1
-
-    elif layout == "1 Big (Left) + Small Column":
-        big_w = math.floor(W / 3)
-        small_w = W - big_w
-        slots.append((0, 0, big_w, H))
-        small_count = count - 1
-        if small_count > 0:
-            small_h = math.floor(H / small_count)
-            for i in range(small_count):
-                slots.append((big_w, i * small_h, small_w, small_h))
-
-    elif layout == "1 Big (Left) + Others Grid (Right)":
-        big_w = math.floor(W / 3)
-        grid_w = W - big_w
-        slots.append((0, 0, big_w, H))
-        others = count - 1
-        if others > 0:
-            rows = 2 if others > 4 else 1
-            cols = math.ceil(others / rows)
-            cell_w = math.floor(grid_w / cols)
-            cell_h = math.floor(H / rows)
-            idx = 1
-            for r in range(rows):
-                for c in range(cols):
-                    if idx < count:
-                        slots.append((big_w + c * cell_w, r * cell_h, cell_w, cell_h))
-                        idx += 1
-
-    elif layout == "1 Big (Right) + Others Rows (Left)":
-        big_w = math.floor(W / 3)
-        grid_w = W - big_w
-        slots.append((grid_w, 0, big_w, H))
-        others = count - 1
-        if others > 0:
-            rows = 2 if others > 4 else 1
-            cols = math.ceil(others / rows)
-            cell_w = math.floor(grid_w / cols)
-            cell_h = math.floor(H / rows)
-            idx = 1
-            for r in range(rows):
-                for c in range(cols):
-                    if idx < count:
-                        slots.append((c * cell_w, r * cell_h, cell_w, cell_h))
-                        idx += 1
-
-    elif layout == "1 Big (Top) + Others Rows (Bottom)":
-        big_h = math.floor(H / 3)
-        grid_h = H - big_h
-        slots.append((0, 0, W, big_h))
-        others = count - 1
-        if others > 0:
-            rows = 2 if others > 4 else 1
-            cols = math.ceil(others / rows)
-            cell_w = math.floor(W / cols)
-            cell_h = math.floor(grid_h / rows)
-            idx = 1
-            for r in range(rows):
-                for c in range(cols):
-                    if idx < count:
-                        slots.append((c * cell_w, big_h + r * cell_h, cell_w, cell_h))
-                        idx += 1
-
-    elif layout == "1 Big (Bottom) + Others Grid (Top)":
-        big_h = math.floor(H / 3)
-        grid_h = H - big_h
-        slots.append((0, grid_h, W, big_h))
-        others = count - 1
-        if others > 0:
-            rows = 2 if others > 4 else 1
-            cols = math.ceil(others / rows)
-            cell_w = math.floor(W / cols)
-            cell_h = math.floor(grid_h / rows)
-            idx = 1
-            for r in range(rows):
-                for c in range(cols):
-                    if idx < count:
-                        slots.append((c * cell_w, r * cell_h, cell_w, cell_h))
-                        idx += 1
-
-    elif layout == "2 Big Left + Others Grid (Right)":
-        big_w = math.floor(W / 3)
-        grid_w = W - big_w
-        big_h = math.floor(H / 2)
-        if count >= 1:
-            slots.append((0, 0, big_w, big_h))
-        if count >= 2:
-            slots.append((0, big_h, big_w, big_h))
-        others = max(0, count - 2)
-        if others > 0:
-            rows = 2 if others > 4 else math.ceil(others / 2)
-            cols = math.ceil(others / rows)
-            cell_w = math.floor(grid_w / cols)
-            cell_h = math.floor(H / rows)
-            idx = 2
-            for r in range(rows):
-                for c in range(cols):
-                    if idx < count:
-                        slots.append((big_w + c * cell_w, r * cell_h, cell_w, cell_h))
-                        idx += 1
-
-    elif layout == "2 Big Right + Others Grid (Left)":
-        big_w = math.floor(W / 3)
-        grid_w = W - big_w
-        big_h = math.floor(H / 2)
-        if count >= 1:
-            slots.append((grid_w, 0, big_w, big_h))
-        if count >= 2:
-            slots.append((grid_w, big_h, big_w, big_h))
-        others = max(0, count - 2)
-        if others > 0:
-            rows = 2 if others > 4 else math.ceil(others / 2)
-            cols = math.ceil(others / rows)
-            cell_w = math.floor(grid_w / cols)
-            cell_h = math.floor(H / rows)
-            idx = 2
-            for r in range(rows):
-                for c in range(cols):
-                    if idx < count:
-                        slots.append((c * cell_w, r * cell_h, cell_w, cell_h))
-                        idx += 1
-
-    elif layout == "2 Big (Top Row) + Small Bottom":
-        big_w = math.floor(W / 2)
-        big_h = math.floor(H / 3)
-        small_h = H - big_h
-        if count >= 1:
-            slots.append((0, 0, big_w, big_h))
-        if count >= 2:
-            slots.append((big_w, 0, big_w, big_h))
-        small_count = max(0, count - 2)
-        if small_count > 0:
-            small_w = math.floor(W / small_count)
-            for i in range(small_count):
-                slots.append((i * small_w, big_h, small_w, small_h))
-
     else:
         cols = math.ceil(math.sqrt(count))
         rows = math.ceil(count / cols)
@@ -245,6 +120,10 @@ def render_resizer_canvas(
     zoom_val: float,
     pan_x: int,
     pan_y: int,
+    brightness_val: float,
+    contrast_val: float,
+    sharpness_val: float,
+    color_val: float,
     use_gradient: bool,
     grad_c1: str,
     grad_c2: str,
@@ -270,7 +149,16 @@ def render_resizer_canvas(
         if i < len(images) and images[i] is not None:
             raw_img = images[i].convert("RGB")
             
-            # 1. Base Fit Strategy
+            # Apply Live Adjustments
+            raw_img = apply_image_enhancements(
+                raw_img,
+                brightness=brightness_val,
+                contrast=contrast_val,
+                sharpness=sharpness_val,
+                color=color_val
+            )
+
+            # Fit Strategy
             if fit_mode == "Auto Zoom to Fill (Crop)":
                 base_scale = max(sw / raw_img.width, sh / raw_img.height)
             elif fit_mode == "Fit Longest Side (Letterbox)":
@@ -278,21 +166,18 @@ def render_resizer_canvas(
             else:
                 base_scale = 1.0
 
-            # 2. Apply Custom User Zoom
             final_scale = base_scale * zoom_val
             target_w = max(1, int(raw_img.width * final_scale))
             target_h = max(1, int(raw_img.height * final_scale))
 
             scaled_img = raw_img.resize((target_w, target_h), Image.Resampling.LANCZOS)
 
-            # 3. Calculate Center + Pan Offsets
             base_offset_x = (sw - target_w) // 2
             base_offset_y = (sh - target_h) // 2
 
             final_img_x = base_offset_x + pan_x
             final_img_y = base_offset_y + pan_y
 
-            # 4. Crop to Slot Bounding Box
             slot_canvas = Image.new("RGB", (sw, sh), (15, 23, 42) if not use_gradient else (0, 0, 0))
             slot_canvas.paste(scaled_img, (final_img_x, final_img_y))
             canvas.paste(slot_canvas, (sx, sy))
@@ -331,20 +216,18 @@ def on_single_upload_change():
     if uploaded:
         base_name = os.path.splitext(uploaded.name)[0]
         st.session_state["resizer_user_filename"] = base_name
-
-
-def on_collage_upload_change():
-    uploaded_list = st.session_state.get("collage_uploader")
-    if uploaded_list and len(uploaded_list) > 0:
-        base_name = os.path.splitext(uploaded_list[0].name)[0]
-        st.session_state["resizer_user_filename"] = f"{base_name}_collage"
+        # Clear previous AI upscale cache on new upload
+        st.session_state["ai_enhanced_image"] = None
 
 
 def render_image_resizer_tab(config: dict):
-    st.markdown("### 🖼️ Image Resizer & Collage Studio")
+    st.markdown("### 🖼️ Image Resizer & Quality Enhancement Studio")
 
     canvas_w = int(config.get("resizer_width", 1200))
     canvas_h = int(config.get("resizer_height", 720))
+
+    if "ai_enhanced_image" not in st.session_state:
+        st.session_state["ai_enhanced_image"] = None
 
     top_col1, top_col2, top_col3 = st.columns([1.5, 1.5, 2])
     with top_col1:
@@ -363,44 +246,52 @@ def render_image_resizer_tab(config: dict):
         with top_col3:
             layout_choice = st.selectbox(
                 "Collage Layout:", 
-                [
-                    "Grid — Equal",
-                    "Grid — Equal (4:3 ratio)",
-                    "Row",
-                    "Column",
-                    "1 Big (Left) + Small Column",
-                    "1 Big (Left) + Others Grid (Right)",
-                    "1 Big (Right) + Others Rows (Left)",
-                    "1 Big (Top) + Others Rows (Bottom)",
-                    "1 Big (Bottom) + Others Grid (Top)",
-                    "2 Big Left + Others Grid (Right)",
-                    "2 Big Right + Others Grid (Left)",
-                    "2 Big (Top Row) + Small Bottom"
-                ]
+                ["Grid — Equal", "Grid — Equal (4:3 ratio)", "Row", "Column"]
             )
-            collage_count = st.slider("Number of Images:", min_value=2, max_value=16, value=3)
+            collage_count = st.slider("Number of Images:", min_value=2, max_value=8, value=3)
 
-    st.markdown("#### 📂 Image Inputs")
+    st.markdown("#### 📂 Image Input & Quality Enhancement")
     loaded_images = []
 
     if mode == "Single Image Mode":
-        single_file = st.file_uploader(
-            "Upload Image:", 
-            type=["png", "jpg", "jpeg", "webp"], 
-            key="single_resizer_uploader",
-            on_change=on_single_upload_change
-        )
+        in_col1, in_col2 = st.columns([2.5, 1.5])
+        with in_col1:
+            single_file = st.file_uploader(
+                "Upload Image:", 
+                type=["png", "jpg", "jpeg", "webp"], 
+                key="single_resizer_uploader",
+                on_change=on_single_upload_change
+            )
+
+        base_img = None
         if single_file:
-            loaded_images.append(Image.open(single_file))
-        else:
-            loaded_images.append(None)
+            # Use AI-upscaled version if generated, otherwise the raw upload
+            if st.session_state.get("ai_enhanced_image") is not None:
+                base_img = st.session_state["ai_enhanced_image"]
+            else:
+                base_img = Image.open(single_file)
+
+            with in_col2:
+                st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
+                if st.button("⚡ Improve Quality (AI Denoise & 2x)", type="secondary", width="stretch"):
+                    with st.spinner("🧠 Restoring details and upscaling via Real-ESRGAN..."):
+                        raw_pil = Image.open(single_file)
+                        st.session_state["ai_enhanced_image"] = upscale_image_cpu(raw_pil, scale=2)
+                        st.rerun()
+
+                if st.session_state.get("ai_enhanced_image") is not None:
+                    st.caption(f"✨ AI Enhanced Active: {base_img.width}x{base_img.height}px")
+                    if st.button("↺ Reset to Original", width="stretch"):
+                        st.session_state["ai_enhanced_image"] = None
+                        st.rerun()
+
+        loaded_images.append(base_img)
     else:
         uploaded_files = st.file_uploader(
-            f"Upload up to {collage_count} Images for Collage:", 
+            f"Upload up to {collage_count} Images:", 
             type=["png", "jpg", "jpeg", "webp"], 
             accept_multiple_files=True,
-            key="collage_uploader",
-            on_change=on_collage_upload_change
+            key="collage_uploader"
         )
         for i in range(collage_count):
             if uploaded_files and i < len(uploaded_files):
@@ -408,7 +299,7 @@ def render_image_resizer_tab(config: dict):
             else:
                 loaded_images.append(None)
 
-    # Transform Controls (Zoom & Pan Positioning)
+    # 1. Transform Controls (Zoom & Pan)
     with st.expander("🔍 Zoom & Positioning Controls", expanded=True):
         pos_c1, pos_c2, pos_c3 = st.columns(3)
         with pos_c1:
@@ -418,8 +309,21 @@ def render_image_resizer_tab(config: dict):
         with pos_c3:
             pan_y = st.slider("Move Vertical (Y Offset):", min_value=-int(canvas_h // 2), max_value=int(canvas_h // 2), value=0, step=5, key="resizer_pan_y_slider")
 
+    # 2. Real-time Live Quality Adjustments (Brightness, Contrast, Sharpness, Saturation)
+    with st.expander("✨ Lighting, Clarity & Color Adjustments", expanded=False):
+        eq_c1, eq_c2, eq_c3, eq_c4 = st.columns(4)
+        with eq_c1:
+            brightness_val = st.slider("Brightness:", 0.5, 2.0, 1.0, step=0.05, key="resizer_bright_slider")
+        with eq_c2:
+            contrast_val = st.slider("Contrast:", 0.5, 2.0, 1.0, step=0.05, key="resizer_contrast_slider")
+        with eq_c3:
+            sharpness_val = st.slider("Sharpness (Clarity):", 0.5, 3.0, 1.0, step=0.1, key="resizer_sharp_slider")
+        with eq_c4:
+            color_val = st.slider("Saturation (Color):", 0.0, 2.0, 1.0, step=0.05, key="resizer_color_slider")
+
+    # 3. Canvas Styling & Overlays
     with st.expander("🎨 Background, Border & Credit Overlays", expanded=False):
-        style_c1, style_c2, style_c3 = st.columns(3)
+        style_c1, style_c2 = st.columns(2)
         with style_c1:
             use_border = st.checkbox("Double Framing Border", value=False)
             use_gradient = st.checkbox("Gradient Background", value=False)
@@ -432,7 +336,7 @@ def render_image_resizer_tab(config: dict):
             credit_text = st.text_input("Credit Text:", placeholder="e.g. Photo: AFP / Daily Ummat")
             credit_pos = st.selectbox("Position:", ["Top Right", "Top Left", "Bottom Right", "Bottom Left"])
 
-    # Render Output Canvas with Transformations
+    # Render Output Canvas
     rendered_image = render_resizer_canvas(
         canvas_w=canvas_w,
         canvas_h=canvas_h,
@@ -443,6 +347,10 @@ def render_image_resizer_tab(config: dict):
         zoom_val=zoom_val,
         pan_x=pan_x,
         pan_y=pan_y,
+        brightness_val=brightness_val,
+        contrast_val=contrast_val,
+        sharpness_val=sharpness_val,
+        color_val=color_val,
         use_gradient=use_gradient,
         grad_c1=grad_c1,
         grad_c2=grad_c2,
@@ -479,7 +387,6 @@ def render_image_resizer_tab(config: dict):
 
     final_filename = clean_name + ext
 
-    # Save the rendered transformation directly to bytes
     img_byte_arr = io.BytesIO()
     rendered_image.save(img_byte_arr, format=fmt, quality=95)
     img_bytes = img_byte_arr.getvalue()
