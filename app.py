@@ -213,26 +213,26 @@ if not st.session_state.get("authenticated", False):
 # ---------------------------------------------------------
 # 2.1 SECURE INCOMING WIRE INGESTION (AUTHENTICATED ONLY)
 # ---------------------------------------------------------
-# This block runs only AFTER authentication is confirmed above.
-# It validates, sanitizes, and ingests incoming story payloads from query params.
+# Runs strictly after authentication is validated above.
+# Sanitizes and forces incoming wire query parameters into session state and widget keys.
 query_params = st.query_params
 
 if "story_text" in query_params:
     raw_incoming_story = str(query_params.get("story_text", "")).strip()
     if raw_incoming_story:
-        # Strip potentially malicious script/iframe tags
+        # Strip script, iframe, embed, and object tags
         clean_story = re.sub(r'<\s*(script|iframe|object|embed)[^>]*>.*?<\s*/\s*\1\s*>', '', raw_incoming_story, flags=re.IGNORECASE | re.DOTALL)
         st.session_state["pub_story_text"] = clean_story
+        st.session_state["pub_story_input_area"] = clean_story
 
 if "image_url" in query_params:
     raw_incoming_img = str(query_params.get("image_url", "")).strip()
     if raw_incoming_img:
         parsed_url = urllib.parse.urlparse(raw_incoming_img)
-        # Only accept safe, standard web protocols
         if parsed_url.scheme in ["http", "https"]:
             st.session_state["incoming_thumb_url"] = raw_incoming_img
+            st.session_state["pub_url_input"] = raw_incoming_img
 
-# Clean browser query parameters immediately after reading to prevent re-injection on reload
 if "story_text" in query_params or "image_url" in query_params:
     st.query_params.clear()
 
@@ -265,12 +265,15 @@ tab_pub, tab_resizer, tab_ai, tab_social, tab_url, tab_settings = st.tabs([
 with tab_pub:
     st.markdown("### 📝 Direct WordPress Story Publisher")
 
-    story_input_val = st.session_state.get("pub_story_text", "")
+    # Keep widget state synchronized with incoming query params
+    if "pub_story_input_area" not in st.session_state:
+        st.session_state["pub_story_input_area"] = st.session_state.get("pub_story_text", "")
+
     story_text = st.text_area(
         "Paste complete story text (Line 1: Title, Line 2: Excerpt, Rest: Content/Markdown):",
-        value=story_input_val,
-        height=140,
-        placeholder="سرخی (Line 1)\nخلاصہ (Line 2)\nمکمل تفصیلات و متن (Line 3 onwards)..."
+        height=180,
+        placeholder="سرخی (Line 1)\nخلاصہ (Line 2)\nمکمل تفصیلات و متن (Line 3 onwards)...",
+        key="pub_story_input_area"
     )
 
     lines_preview = [l.strip() for l in story_text.splitlines() if l.strip()]
@@ -311,11 +314,11 @@ with tab_pub:
     with thumb_col1:
         pub_local_img = st.file_uploader("Or Upload Local File:", type=["png", "jpg", "jpeg", "webp"], key="pub_file_up")
     with thumb_col2:
-        # Pre-fill with incoming wire image URL if available
-        default_thumb = st.session_state.get("incoming_thumb_url", "")
+        if "pub_url_input" not in st.session_state:
+            st.session_state["pub_url_input"] = st.session_state.get("incoming_thumb_url", "")
+
         pub_thumb_url = st.text_input(
-            "Or Paste Image / Web Story URL:", 
-            value=default_thumb, 
+            "Or Paste Image / Web Story URL:",
             placeholder="https://example.com/photo.jpg or article URL", 
             key="pub_url_input"
         )
@@ -352,8 +355,9 @@ with tab_pub:
     with act_c1:
         if st.button("🧹 Clear All Fields", width="stretch"):
             st.session_state["pub_story_text"] = ""
-            if "incoming_thumb_url" in st.session_state:
-                del st.session_state["incoming_thumb_url"]
+            st.session_state["pub_story_input_area"] = ""
+            st.session_state["incoming_thumb_url"] = ""
+            st.session_state["pub_url_input"] = ""
             if "story_img_bytes" in st.session_state:
                 del st.session_state["story_img_bytes"]
             if "story_img_path" in st.session_state:
@@ -542,6 +546,7 @@ with tab_ai:
                 if auto_load_pub:
                     clean_for_pub = generated_article.replace("TITLE:", "").replace("EXCERPT:", "").replace("CONTENT:", "").strip()
                     st.session_state["pub_story_text"] = clean_for_pub
+                    st.session_state["pub_story_input_area"] = clean_for_pub
                     st.success("✅ News article generated and loaded into Direct Story Publisher!")
 
     ai_result = st.session_state.get("ai_news_result", "")
