@@ -2,6 +2,7 @@ import os
 import io
 import re
 import json
+import base64
 import tempfile
 import pathlib
 import urllib.parse
@@ -211,17 +212,51 @@ if not st.session_state.get("authenticated", False):
 
 
 # ---------------------------------------------------------
-# 2.1 SECURE INCOMING WIRE INGESTION (AUTHENTICATED ONLY)
+# 2.1 SECURE WIRE INGESTION (DIRECT PARAMS + WP DRAFT RELAY)
 # ---------------------------------------------------------
-# Runs strictly after authentication is validated above.
-# Sanitizes and forces incoming wire query parameters into session state and widget keys.
+# Executes only after authentication is confirmed.
 query_params = st.query_params
 
+# Path A: WordPress Staging Relay (Zero-URL-bloat & direct cloud media fetch)
+if "wp_edit_id" in query_params:
+    draft_id = str(query_params.get("wp_edit_id", "")).strip()
+    wp_base = config.get("wp_url", "").rstrip("/")
+    wp_u = config.get("wp_user", "").strip()
+    wp_p = config.get("wp_pass", "").strip()
+
+    if draft_id.isdigit() and wp_base and wp_u and wp_p:
+        try:
+            creds = f"{wp_u}:{wp_p}"
+            token = base64.b64encode(creds.encode("utf-8")).decode("utf-8")
+            auth_header = {"Authorization": f"Basic {token}"}
+
+            r = requests.get(f"{wp_base}/wp-json/wp/v2/posts/{draft_id}", headers=auth_header, timeout=15)
+            if r.status_code == 200:
+                pdata = r.json()
+                fetched_title = pdata.get("title", {}).get("raw") or pdata.get("title", {}).get("rendered", "")
+                fetched_excerpt = BeautifulSoup(pdata.get("excerpt", {}).get("rendered", ""), "html.parser").get_text().strip()
+                fetched_body = BeautifulSoup(pdata.get("content", {}).get("raw") or pdata.get("content", {}).get("rendered", ""), "html.parser").get_text().strip()
+
+                formatted_story = f"{fetched_title}\n{fetched_excerpt}\n\n{fetched_body}".strip()
+                st.session_state["pub_story_text"] = formatted_story
+                st.session_state["pub_story_input_area"] = formatted_story
+
+                media_id = pdata.get("featured_media", 0)
+                if media_id:
+                    mr = requests.get(f"{wp_base}/wp-json/wp/v2/media/{media_id}", headers=auth_header, timeout=10)
+                    if mr.status_code == 200:
+                        img_link = mr.json().get("source_url", "")
+                        st.session_state["incoming_thumb_url"] = img_link
+                        st.session_state["pub_url_input"] = img_link
+        except Exception as ex:
+            print(f"[STAGING INGEST ERROR] {ex}")
+
+# Path B: Direct URL parameter fallback (sanitized against injection)
 if "story_text" in query_params:
     raw_incoming_story = str(query_params.get("story_text", "")).strip()
     if raw_incoming_story:
-        # Strip script, iframe, embed, and object tags
-        clean_story = re.sub(r'<\s*(script|iframe|object|embed)[^>]*>.*?<\s*/\s*\1\s*>', '', raw_incoming_story, flags=re.IGNORECASE | re.DOTALL)
+        # Strip script, iframe, embed, object, and form tags to prevent XSS
+        clean_story = re.sub(r'<\s*(script|iframe|object|embed|form)[^>]*>.*?<\s*/\s*\1\s*>', '', raw_incoming_story, flags=re.IGNORECASE | re.DOTALL)
         st.session_state["pub_story_text"] = clean_story
         st.session_state["pub_story_input_area"] = clean_story
 
@@ -229,11 +264,13 @@ if "image_url" in query_params:
     raw_incoming_img = str(query_params.get("image_url", "")).strip()
     if raw_incoming_img:
         parsed_url = urllib.parse.urlparse(raw_incoming_img)
+        # Accept only safe web schemes
         if parsed_url.scheme in ["http", "https"]:
             st.session_state["incoming_thumb_url"] = raw_incoming_img
             st.session_state["pub_url_input"] = raw_incoming_img
 
-if "story_text" in query_params or "image_url" in query_params:
+# Clear query parameters from address bar to prevent redundant resets on reruns
+if "wp_edit_id" in query_params or "story_text" in query_params or "image_url" in query_params:
     st.query_params.clear()
 
 
@@ -265,7 +302,7 @@ tab_pub, tab_resizer, tab_ai, tab_social, tab_url, tab_settings = st.tabs([
 with tab_pub:
     st.markdown("### 📝 Direct WordPress Story Publisher")
 
-    # Keep widget state synchronized with incoming query params
+    # Keep widget state synchronized with incoming wire data
     if "pub_story_input_area" not in st.session_state:
         st.session_state["pub_story_input_area"] = st.session_state.get("pub_story_text", "")
 
